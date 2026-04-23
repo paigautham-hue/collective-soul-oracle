@@ -44,7 +44,19 @@ import {
   revokeShareLink,
   listShareLinksByProject,
   getGraphEventsByProject,
+  listWatchlist,
+  createWatchlistItem,
+  updateWatchlistItem,
+  deleteWatchlistItem,
 } from "./db-extensions";
+import {
+  listPersonaTemplates,
+  getPersonaTemplate,
+  createPersonaTemplate,
+  deletePersonaTemplate,
+  applyTemplateToProject,
+} from "./persona-library";
+import { ingestSymbolNews, ingestWatchlist, recentCatalysts, isFinanceConfigured } from "./finance-ingest";
 import { extractPredictions, persistExtractedPredictions, summarizeCalibration, brierBinary } from "./predictions";
 import { renderReportPdf, renderReportPptx } from "./report-export";
 import { storagePut } from "./storage";
@@ -110,6 +122,7 @@ export const appRouter = router({
           title: z.string().min(1).max(255),
           description: z.string().optional(),
           topic: z.string().optional(),
+          projectType: z.enum(["narrative", "technical", "finance"]).default("narrative"),
           platform: z.enum(["twitter", "reddit", "both"]).optional(),
           agentCount: z.number().min(2).max(100).optional(),
           roundCount: z.number().min(1).max(20).optional(),
@@ -121,6 +134,7 @@ export const appRouter = router({
           title: input.title,
           description: input.description,
           topic: input.topic,
+          projectType: input.projectType,
           platform: input.platform ?? "both",
           agentCount: input.agentCount ?? 10,
           roundCount: input.roundCount ?? 5,
@@ -653,6 +667,139 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
     list: protectedProcedure
       .input(z.object({ projectId: z.number(), limit: z.number().default(100) }))
       .query(({ input }) => getGraphEventsByProject(input.projectId, input.limit)),
+  }),
+
+  // ─── Persona Library ────────────────────────────────────────────────────────
+  personas: router({
+    list: protectedProcedure
+      .input(z.object({ scope: z.enum(["narrative", "technical", "finance"]).optional() }))
+      .query(({ ctx, input }) => listPersonaTemplates({ scope: input.scope, userId: ctx.user.id })),
+
+    get: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const t = await getPersonaTemplate(input.id);
+        if (!t) throw new TRPCError({ code: "NOT_FOUND" });
+        return t;
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        scope: z.enum(["narrative", "technical", "finance"]),
+        name: z.string().min(1).max(200),
+        description: z.string().optional(),
+        personas: z.array(z.object({
+          name: z.string(),
+          persona: z.string(),
+          ideology: z.string().optional(),
+          platform: z.enum(["twitter", "reddit"]).optional(),
+          followers: z.number().optional(),
+        })).min(1).max(50),
+      }))
+      .mutation(({ ctx, input }) => createPersonaTemplate({
+        userId: ctx.user.id,
+        scope: input.scope,
+        name: input.name,
+        description: input.description ?? null,
+        personas: input.personas,
+        isSystem: false,
+      })),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await deletePersonaTemplate(input.id, ctx.user.id);
+        return { success: true };
+      }),
+
+    applyToProject: protectedProcedure
+      .input(z.object({ templateId: z.number(), projectId: z.number() }))
+      .mutation(({ input }) => applyTemplateToProject({ templateId: input.templateId, projectId: input.projectId })),
+  }),
+
+  // ─── Watchlist (finance project type) ───────────────────────────────────────
+  watchlist: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => listWatchlist(input.projectId)),
+
+    add: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        symbol: z.string().min(1).max(32),
+        assetClass: z.enum(["equity", "crypto", "commodity", "forex", "index", "rate"]).default("equity"),
+        thesis: z.string().optional(),
+        positionSide: z.enum(["long", "short", "watch"]).default("watch"),
+      }))
+      .mutation(({ ctx, input }) => createWatchlistItem({
+        projectId: input.projectId,
+        userId: ctx.user.id,
+        symbol: input.symbol.toUpperCase(),
+        assetClass: input.assetClass,
+        thesis: input.thesis ?? null,
+        positionSide: input.positionSide,
+        ingestSources: ["polygon-news"],
+        active: true,
+      })),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        thesis: z.string().optional(),
+        positionSide: z.enum(["long", "short", "watch"]).optional(),
+        active: z.boolean().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { id, ...rest } = input;
+        await updateWatchlistItem(id, rest);
+        return { success: true };
+      }),
+
+    remove: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteWatchlistItem(input.id);
+        return { success: true };
+      }),
+  }),
+
+  // ─── Finance ingest + catalysts ─────────────────────────────────────────────
+  finance: router({
+    isConfigured: publicProcedure.query(() => ({ configured: isFinanceConfigured() })),
+
+    ingest: protectedProcedure
+      .input(z.object({ projectId: z.number(), symbol: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        if (input.symbol) {
+          return [await ingestSymbolNews({ projectId: input.projectId, symbol: input.symbol.toUpperCase() })];
+        }
+        return ingestWatchlist(input.projectId);
+      }),
+
+    catalysts: protectedProcedure
+      .input(z.object({ projectId: z.number(), limit: z.number().default(50) }))
+      .query(({ input }) => recentCatalysts(input.projectId, input.limit)),
+
+    // Trigger a sim from a catalyst — uses the existing simulation runner.
+    triggerSim: protectedProcedure
+      .input(z.object({ projectId: z.number(), totalRounds: z.number().min(1).max(20).default(4) }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+        await createSimulationRun({
+          projectId: input.projectId,
+          userId: ctx.user.id,
+          status: "pending",
+          totalRounds: input.totalRounds,
+          platform: project.platform || "both",
+        });
+        const runs = await getSimulationRunsByProject(input.projectId);
+        const run = runs[0];
+        await updateSimulationRun(run.id, { status: "running", startedAt: new Date() });
+        const { runSimulation } = await import("./simulation-runner");
+        runSimulation({ runId: run.id, projectId: input.projectId, totalRounds: input.totalRounds, userId: ctx.user.id }).catch(console.error);
+        return run;
+      }),
   }),
 
   // ─── Chat ──────────────────────────────────────────────────────────────────

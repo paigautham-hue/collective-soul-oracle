@@ -14,4 +14,10 @@ export const ENV = {
   // Embeddings: model + dim (1536 default for text-embedding-3-small)
   embeddingsModel: process.env.EMBEDDINGS_MODEL ?? "text-embedding-3-small",
   embeddingsDim: Number(process.env.EMBEDDINGS_DIM ?? 1536),
+  // Finance ingest providers (optional — features degrade gracefully when absent)
+  polygonApiKey: process.env.POLYGON_API_KEY ?? "",
+  finnhubApiKey: process.env.FINNHUB_API_KEY ?? "",
+  // Web search for agent tool-use (optional). Tavily, Brave, or SerpAPI compatible.
+  webSearchProvider: process.env.WEB_SEARCH_PROVIDER ?? "",   // 'tavily' | 'brave' | 'serpapi' | ''
+  webSearchApiKey: process.env.WEB_SEARCH_API_KEY ?? "",
 };

@@ -16,6 +16,9 @@ import {
   shareLinks,
   type InsertShareLink,
   type ShareLink,
+  watchlistItems,
+  type InsertWatchlistItem,
+  type WatchlistItem,
 } from "../drizzle/schema";
 
 // ─── Graph Events ─────────────────────────────────────────────────────────────
@@ -124,4 +127,32 @@ export async function listShareLinksByProject(projectId: number): Promise<ShareL
   const db = await getDb();
   if (!db) return [];
   return db.select().from(shareLinks).where(eq(shareLinks.projectId, projectId)).orderBy(desc(shareLinks.createdAt));
+}
+
+// ─── Watchlist ────────────────────────────────────────────────────────────────
+export async function listWatchlist(projectId: number): Promise<WatchlistItem[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(watchlistItems).where(eq(watchlistItems.projectId, projectId)).orderBy(desc(watchlistItems.createdAt));
+}
+
+export async function createWatchlistItem(data: InsertWatchlistItem): Promise<WatchlistItem | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.insert(watchlistItems).values(data);
+  const id = (result as unknown as { insertId: number }).insertId;
+  const [created] = await db.select().from(watchlistItems).where(eq(watchlistItems.id, id)).limit(1);
+  return created ?? null;
+}
+
+export async function updateWatchlistItem(id: number, data: Partial<InsertWatchlistItem>): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(watchlistItems).set(data).where(eq(watchlistItems.id, id));
+}
+
+export async function deleteWatchlistItem(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(watchlistItems).where(eq(watchlistItems.id, id));
 }

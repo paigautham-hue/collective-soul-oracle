@@ -28,11 +28,16 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
 // ─── Projects ───────────────────────────────────────────────────────────────
+// projectType separates the three workflows so UI/UX doesn't muddle messaging:
+//   narrative — original MiroFish-style social / discourse simulation (default)
+//   technical — engineering, formulation, design-review, FMEA workflows
+//   finance   — stock/commodity catalyst & narrative monitoring
 export const projects = mysqlTable("projects", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
+  projectType: mysqlEnum("projectType", ["narrative", "technical", "finance"]).default("narrative").notNull(),
   status: mysqlEnum("status", [
     "draft",
     "building_graph",
@@ -287,6 +292,69 @@ export type Prediction = typeof predictions.$inferSelect;
 export type InsertPrediction = typeof predictions.$inferInsert;
 
 // ─── Share Links (Phase 2: public sharing) ───────────────────────────────────
+// ─── Persona Templates ──────────────────────────────────────────────────────
+// Reusable expert persona packs. Curated seed packs cover narrative / technical /
+// finance domains; users can also save their own. Applying a pack to a project
+// upserts agents from the template's persona list.
+export const personaTemplates = mysqlTable("persona_templates", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId"),                                      // null = global / system seed
+  scope: mysqlEnum("scope", ["narrative", "technical", "finance"]).notNull(),
+  name: varchar("name", { length: 200 }).notNull(),
+  description: text("description"),
+  personas: json("personas").$type<Array<{
+    name: string;
+    persona: string;
+    ideology?: string;
+    platform?: "twitter" | "reddit";
+    followers?: number;
+  }>>().notNull(),
+  isSystem: boolean("isSystem").default(false).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PersonaTemplate = typeof personaTemplates.$inferSelect;
+export type InsertPersonaTemplate = typeof personaTemplates.$inferInsert;
+
+// ─── Watchlist (finance project type) ────────────────────────────────────────
+export const watchlistItems = mysqlTable("watchlist_items", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  userId: int("userId").notNull(),
+  symbol: varchar("symbol", { length: 32 }).notNull(),         // 'AAPL', 'NVDA', 'BTC-USD', 'CL=F' (oil futures)
+  assetClass: mysqlEnum("assetClass", ["equity", "crypto", "commodity", "forex", "index", "rate"]).default("equity").notNull(),
+  thesis: text("thesis"),                                       // your reason for tracking
+  positionSide: mysqlEnum("positionSide", ["long", "short", "watch"]).default("watch"),
+  ingestSources: json("ingestSources").$type<string[]>(),      // ['polygon-news', 'sec-edgar', 'reddit-wsb']
+  active: boolean("active").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type WatchlistItem = typeof watchlistItems.$inferSelect;
+export type InsertWatchlistItem = typeof watchlistItems.$inferInsert;
+
+// ─── Catalyst Events (auto-detected, can trigger sims) ──────────────────────
+export const catalystEvents = mysqlTable("catalyst_events", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  watchlistItemId: int("watchlistItemId"),
+  symbol: varchar("symbol", { length: 32 }),
+  source: varchar("source", { length: 64 }).notNull(),         // 'polygon-news', 'sec-edgar', 'manual'
+  externalId: varchar("externalId", { length: 255 }),          // dedup key from source
+  headline: text("headline").notNull(),
+  summary: text("summary"),
+  url: text("url"),
+  sentiment: mysqlEnum("sentiment", ["bullish", "bearish", "neutral", "mixed"]),
+  importance: int("importance").default(50),                    // 0-100
+  publishedAt: timestamp("publishedAt"),
+  triggeredSimId: int("triggeredSimId"),                        // link to sim spawned by this event
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type CatalystEvent = typeof catalystEvents.$inferSelect;
+export type InsertCatalystEvent = typeof catalystEvents.$inferInsert;
+
 export const shareLinks = mysqlTable("share_links", {
   id: int("id").autoincrement().primaryKey(),
   projectId: int("projectId").notNull(),

@@ -25,6 +25,7 @@ import { remember, recall, decayMemories } from "./memory";
 import { addGraphEvent } from "./db-extensions";
 import { emitSimulationLog, emitSimulationStatus, emitGraphEvent } from "./uploadAndSocket";
 import { notifyOwner } from "./_core/notification";
+import { executeTool, toolsAvailableFor, describeToolsForPrompt, type ToolName, type ToolCall } from "./agent-tools";
 
 const PLATFORM_CHOICES = ["twitter", "reddit"] as const;
 const VALID_ACTIONS = ["posted", "retweeted", "replied", "liked", "shared", "observed"] as const;
@@ -36,6 +37,7 @@ interface AgentDecision {
   reasoning?: string;
   newEntity?: { id: string; label: string; type?: string; description?: string };
   newRelation?: { source: string; target: string; label?: string };
+  toolCall?: ToolCall;
 }
 
 const DECISION_SCHEMA = {
@@ -67,6 +69,14 @@ const DECISION_SCHEMA = {
         },
         required: ["source", "target"],
       },
+      toolCall: {
+        type: "object",
+        properties: {
+          tool: { type: "string" },
+          args: { type: "object" },
+        },
+        required: ["tool", "args"],
+      },
     },
   },
   strict: false,
@@ -77,16 +87,28 @@ function buildAgentSystemPrompt(agent: {
   persona?: string | null;
   ideology?: string | null;
   platform?: string | null;
-}, topic: string) {
-  return [
-    `You are ${agent.name}, a simulated agent in a multi-agent social simulation about: "${topic}".`,
+}, topic: string, projectType: "narrative" | "technical" | "finance", toolNames: ToolName[]) {
+  const flavour = projectType === "technical"
+    ? `multi-disciplinary technical design review on: "${topic}". Be specific, cite trade-offs, name risks.`
+    : projectType === "finance"
+      ? `event-driven finance round-table on: "${topic}". Focus on narrative shifts, catalyst impact, risk framing — NOT direct price prediction.`
+      : `multi-agent social simulation about: "${topic}".`;
+
+  const lines = [
+    `You are ${agent.name}, a simulated expert in a ${flavour}`,
     `Persona: ${agent.persona ?? "A thoughtful participant."}`,
     `Ideology / stance: ${agent.ideology ?? "balanced and analytical"}.`,
-    `Primary platform: ${agent.platform ?? "general"}.`,
+    projectType === "narrative" ? `Primary platform: ${agent.platform ?? "general"}.` : "",
     `You react authentically to peer activity and your own memories.`,
-    `Always respond with valid JSON matching the AgentDecision schema. Keep "content" under 280 chars when possible.`,
-    `Use "newEntity" / "newRelation" sparingly — only when this round genuinely surfaces a new actor, concept, or relationship the simulation should track.`,
-  ].join("\n");
+    `Always respond with valid JSON matching the AgentDecision schema.`,
+    projectType === "narrative"
+      ? `Keep "content" under 280 chars when possible.`
+      : `"content" should be a substantive contribution (1-3 sentences). Be concrete, not generic.`,
+    `Use "newEntity" / "newRelation" sparingly — only when this round genuinely surfaces a new actor, concept, or relationship.`,
+  ].filter(Boolean);
+  const toolBlock = describeToolsForPrompt(toolNames);
+  if (toolBlock) lines.push("", toolBlock);
+  return lines.join("\n");
 }
 
 function summarizePeers(peerActions: Array<{ agentName: string | null; action: string | null; content: string | null }>) {
@@ -108,12 +130,15 @@ async function decideAgentAction(args: {
   agent: { id: number; agentId: string; name: string; persona?: string | null; ideology?: string | null; platform?: string | null };
   topic: string;
   round: number;
+  projectType: "narrative" | "technical" | "finance";
+  toolNames: ToolName[];
+  toolResultForLastTool?: string;
   peerActions: Array<{ agentName: string | null; action: string | null; content: string | null }>;
   memories: Array<{ kind: string; content: string; round: number | null }>;
 }): Promise<AgentDecision> {
-  const { agent, topic, round, peerActions, memories } = args;
-  const systemPrompt = buildAgentSystemPrompt(agent, topic);
-  const userPrompt = [
+  const { agent, topic, round, projectType, toolNames, toolResultForLastTool, peerActions, memories } = args;
+  const systemPrompt = buildAgentSystemPrompt(agent, topic, projectType, toolNames);
+  const promptLines = [
     `ROUND ${round}.`,
     ``,
     `Recent peer activity:`,
@@ -121,9 +146,12 @@ async function decideAgentAction(args: {
     ``,
     `Your relevant memories (most-salient first):`,
     summarizeMemories(memories),
-    ``,
-    `Decide your next action. Respond ONLY as JSON matching AgentDecision.`,
-  ].join("\n");
+  ];
+  if (toolResultForLastTool) {
+    promptLines.push(``, `Result of your previous tool call:`, toolResultForLastTool);
+  }
+  promptLines.push(``, `Decide your next action. Respond ONLY as JSON matching AgentDecision.`);
+  const userPrompt = promptLines.join("\n");
 
   try {
     const result = await complete({
@@ -213,6 +241,8 @@ export async function runSimulation(opts: RunSimulationOptions): Promise<void> {
     }
     const baseTopic = project?.topic ?? project?.title ?? "the topic";
     const topic = perturbation?.topicReframe ? `${baseTopic} (reframed: ${perturbation.topicReframe})` : baseTopic;
+    const projectType = (project?.projectType ?? "narrative") as "narrative" | "technical" | "finance";
+    const toolNames = toolsAvailableFor(projectType);
 
     emitSimulationStatus(runId, "running", 0, totalRounds);
 
@@ -237,6 +267,8 @@ export async function runSimulation(opts: RunSimulationOptions): Promise<void> {
           round,
           runId,
           projectId,
+          projectType,
+          toolNames,
           peerActions,
         })));
       }
@@ -278,9 +310,11 @@ async function stepAgent(args: {
   round: number;
   runId: number;
   projectId: number;
+  projectType: "narrative" | "technical" | "finance";
+  toolNames: ToolName[];
   peerActions: Array<{ agentName: string | null; action: string | null; content: string | null }>;
 }): Promise<void> {
-  const { agent, topic, round, runId, projectId, peerActions } = args;
+  const { agent, topic, round, runId, projectId, projectType, toolNames, peerActions } = args;
 
   // Recall — vector retrieval of own memories relevant to the current peer chatter.
   const recallQuery = peerActions.length > 0
@@ -294,8 +328,18 @@ async function stepAgent(args: {
     console.warn(`[sim] recall failed for ${agent.name}:`, err);
   }
 
-  // Decide
-  const decision = await decideAgentAction({ agent, topic, round, peerActions, memories });
+  // Decide — first pass
+  let decision = await decideAgentAction({ agent, topic, round, projectType, toolNames, peerActions, memories });
+
+  // Tool execution: if the agent requested a tool and the project type allows it,
+  // execute it and re-ask once with the result so the agent can incorporate it.
+  if (decision.toolCall && toolNames.includes(decision.toolCall.tool)) {
+    const tr = await executeTool(decision.toolCall);
+    decision = await decideAgentAction({
+      agent, topic, round, projectType, toolNames, peerActions, memories,
+      toolResultForLastTool: `${tr.tool}(${JSON.stringify(decision.toolCall.args)}) → ${tr.ok ? "OK" : "ERR"}: ${tr.output}`,
+    });
+  }
 
   // Choose platform — respect agent.platform if set, else random.
   const platform = (agent.platform as "twitter" | "reddit" | undefined) ?? PLATFORM_CHOICES[Math.floor(Math.random() * PLATFORM_CHOICES.length)];
