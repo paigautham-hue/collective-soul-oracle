@@ -496,58 +496,10 @@ export type AppRouter = typeof appRouter;
 
 // ─── Background Tasks ─────────────────────────────────────────────────────────
 async function runSimulationBackground(runId: number, projectId: number, totalRounds: number, userId: number) {
-  try {
-    const agents = await getAgentsByProject(projectId);
-    const project = await getProjectById(projectId);
-
-    for (let round = 1; round <= totalRounds; round++) {
-      await updateSimulationRun(runId, { currentRound: round });
-
-      // Simulate agent actions for this round
-      for (const agent of agents.slice(0, Math.min(agents.length, 5))) {
-        const action = ["posted", "retweeted", "replied", "liked", "shared"][Math.floor(Math.random() * 5)];
-        const platforms = ["twitter", "reddit"];
-        const platform = platforms[Math.floor(Math.random() * platforms.length)];
-
-        const content = await routeLLM(
-          "chat",
-          `As ${agent.name} (${agent.persona}), write a short social media ${action} about: "${project?.topic || "the current topic"}". Keep it under 280 characters.`,
-        ).catch(() => `[${agent.name}] ${action} about the topic.`);
-
-        await addSimulationLog({
-          simulationRunId: runId,
-          projectId,
-          round,
-          agentName: agent.name,
-          platform,
-          action,
-          content,
-          logLevel: "info",
-        });
-
-        // Small delay to avoid rate limiting
-        await new Promise((r) => setTimeout(r, 500));
-      }
-
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-
-    await updateSimulationRun(runId, { status: "completed", completedAt: new Date() });
-    await updateProject(projectId, { status: "completed" });
-
-    await notifyOwner({
-      title: "Simulation Completed",
-      content: `Simulation run #${runId} for project #${projectId} has completed successfully after ${totalRounds} rounds.`,
-    });
-  } catch (err) {
-    console.error("[Simulation] Background task failed:", err);
-    await updateSimulationRun(runId, {
-      status: "failed",
-      errorMessage: err instanceof Error ? err.message : "Unknown error",
-      completedAt: new Date(),
-    });
-    await updateProject(projectId, { status: "failed" });
-  }
+  // Delegated to the new memory-aware multi-agent runner.
+  // Lazy import to avoid circular module load.
+  const { runSimulation } = await import("./simulation-runner");
+  await runSimulation({ runId, projectId, totalRounds, userId });
 }
 
 async function generateReportBackground(reportId: number, projectId: number, topic: string, userId: number) {

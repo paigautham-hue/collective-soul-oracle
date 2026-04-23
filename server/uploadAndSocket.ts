@@ -34,6 +34,22 @@ export function emitSimulationStatus(simulationRunId: number, status: string, cu
   }
 }
 
+export type GraphEventPayload =
+  | { type: "node_added"; nodeId: string; label: string; round: number; agentName: string }
+  | { type: "edge_added"; source: string; target: string; label: string; round: number; agentName: string };
+
+export function emitGraphEvent(projectId: number, payload: GraphEventPayload) {
+  if (_io) {
+    _io.to(`project:${projectId}`).emit("graph:event", payload);
+  }
+}
+
+export function emitCollabPresence(projectId: number, payload: { userId: number; name?: string | null; section?: string }) {
+  if (_io) {
+    _io.to(`project:${projectId}`).emit("collab:presence", payload);
+  }
+}
+
 export function registerUploadAndSocket(app: Express, server: Server) {
   // ─── Socket.IO ────────────────────────────────────────────────────────────
   _io = new SocketIOServer(server, {
@@ -51,6 +67,20 @@ export function registerUploadAndSocket(app: Express, server: Server) {
 
     socket.on("leave:simulation", (simulationRunId: number) => {
       socket.leave(`simulation:${simulationRunId}`);
+    });
+
+    socket.on("join:project", (projectId: number) => {
+      socket.join(`project:${projectId}`);
+    });
+
+    socket.on("leave:project", (projectId: number) => {
+      socket.leave(`project:${projectId}`);
+    });
+
+    socket.on("collab:presence", (data: { projectId: number; userId: number; name?: string; section?: string }) => {
+      if (data?.projectId) {
+        socket.to(`project:${data.projectId}`).emit("collab:presence", { userId: data.userId, name: data.name, section: data.section });
+      }
     });
 
     socket.on("disconnect", () => {
