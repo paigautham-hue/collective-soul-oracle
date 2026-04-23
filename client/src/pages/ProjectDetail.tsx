@@ -5,6 +5,8 @@ import { motion } from "framer-motion";
 import TopNav from "@/components/TopNav";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { useState } from "react";
+import { Sparkles } from "lucide-react";
 import {
   ArrowLeft, Network, Activity, FileText, MessageSquare,
   Play, ChevronRight, Brain, Zap, Globe, Users, Clock,
@@ -67,6 +69,10 @@ export default function ProjectDetail() {
     onSuccess: (d) => toast.success(`Wiped ${d.deleted} memory entr${d.deleted === 1 ? "y" : "ies"} \u2014 next run will be blank-slate`),
     onError: (err) => toast.error(err.message),
   });
+
+  const { data: researchStatus } = trpc.research.status.useQuery(undefined, { enabled: isAuthenticated });
+  const [deepResearchOpen, setDeepResearchOpen] = useState(false);
+  const [deepResearchVariant, setDeepResearchVariant] = useState<"preview" | "max">("max");
 
   if (!isAuthenticated) {
     return <div className="min-h-screen nebula-bg flex items-center justify-center">
@@ -163,6 +169,19 @@ export default function ProjectDetail() {
       href: `/project/${projectId}/predictions`,
       color: "oklch(0.72_0.18_145)",
       available: reports && reports.length > 0,
+    },
+    {
+      icon: Sparkles,
+      label: researchStatus?.configured ? `Deep Research Report (${researchStatus.remaining}/${researchStatus.quota} left)` : "Deep Research Report",
+      description: researchStatus?.configured
+        ? "Web-grounded report via Gemini Deep Research with native visualizations"
+        : "Add GEMINI_API_KEY in Manus to enable",
+      color: "oklch(0.85 0.20 75)",
+      available: !!researchStatus?.configured && (researchStatus.remaining > 0) && canGenerateReport,
+      action: !!researchStatus?.configured && researchStatus.remaining > 0 && canGenerateReport
+        ? () => setDeepResearchOpen(true)
+        : undefined,
+      href: "#",
     },
     {
       icon: Users,
@@ -391,6 +410,57 @@ export default function ProjectDetail() {
           </motion.div>
         )}
       </div>
+
+      <AlertDialog open={deepResearchOpen} onOpenChange={setDeepResearchOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5" style={{ color: "oklch(0.85 0.20 75)" }} />
+              Generate with Deep Research
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Cross-references current public information, includes citations and native visualizations.
+              {researchStatus && (
+                <span className="block mt-2 text-xs" style={{ color: "oklch(0.65 0.02 265)" }}>
+                  Quota this month: {researchStatus.usedThisMonth} / {researchStatus.quota} used · {researchStatus.remaining} remaining
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid grid-cols-2 gap-2 my-2">
+            {(["max", "preview"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setDeepResearchVariant(v)}
+                className="text-left p-3 rounded border transition-all"
+                style={{
+                  background: deepResearchVariant === v ? "oklch(0.85 0.20 75 / 0.15)" : "transparent",
+                  borderColor: deepResearchVariant === v ? "oklch(0.85 0.20 75)" : "oklch(0.25 0.05 265 / 0.5)",
+                }}
+              >
+                <div className="font-medium text-sm">{v === "max" ? "Max depth" : "Preview (faster)"}</div>
+                <div className="text-xs mt-1" style={{ color: "oklch(0.55 0.02 265)" }}>
+                  {v === "max" ? "Heavy synthesis · IPO-grade" : "Streaming · catalyst dives"}
+                </div>
+              </button>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => generateReportMutation.mutate({
+                projectId,
+                topic: project.topic || project.title,
+                simulationRunId: latestSim?.id,
+                useDeepResearch: true,
+                deepResearchVariant,
+              })}
+            >
+              Generate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

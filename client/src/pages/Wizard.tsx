@@ -192,6 +192,8 @@ export default function Wizard() {
                   </p>
                 </div>
 
+                <ResearchSeedBox projectId={projectId} topic={project?.topic ?? project?.title ?? ""} onSeeded={() => { refetchProject(); setStep(3); }} />
+
                 {/* Drop Zone */}
                 <div
                   onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -480,6 +482,68 @@ export default function Wizard() {
           </motion.div>
         </AnimatePresence>
       </div>
+    </div>
+  );
+}
+
+function ResearchSeedBox({ projectId, topic, onSeeded }: { projectId: number; topic: string; onSeeded: () => void }) {
+  const { data: research } = trpc.research.status.useQuery();
+  const [draftTopic, setDraftTopic] = useState(topic);
+  const [open, setOpen] = useState(false);
+  const seedMutation = trpc.research.seedProject.useMutation({
+    onSuccess: (r) => {
+      toast.success(`Seeded: ${r.entitiesAdded} entities, ${r.relationsAdded} relations, ${r.agentsAdded} agents`);
+      onSeeded();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  if (!research?.configured) {
+    return (
+      <div className="mb-6 p-3 rounded-xl border text-xs" style={{ background: "oklch(0.10 0.02 265 / 0.5)", borderColor: "oklch(0.25 0.05 265 / 0.5)", color: "oklch(0.55 0.02 265)" }}>
+        Tip: enable Gemini Deep Research (set <code>GEMINI_API_KEY</code> in Manus) to skip uploads and seed this project from a topic alone.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6 p-4 rounded-xl border" style={{ background: "oklch(0.85 0.20 75 / 0.05)", borderColor: "oklch(0.85 0.20 75 / 0.40)" }}>
+      {!open ? (
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium" style={{ color: "oklch(0.85 0.20 75)" }}>✦ Skip uploads — research the topic instead</div>
+            <div className="text-xs mt-0.5" style={{ color: "oklch(0.65 0.02 265)" }}>
+              Gemini Deep Research surfaces entities + suggests stakeholder agents · {research.remaining}/{research.quota} calls left
+            </div>
+          </div>
+          <Button variant="ghost" onClick={() => setOpen(true)} disabled={research.remaining <= 0}>
+            Use research seed
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs uppercase tracking-wider mb-1" style={{ color: "oklch(0.55 0.02 265)" }}>Topic to research</label>
+            <input
+              value={draftTopic}
+              onChange={(e) => setDraftTopic(e.target.value)}
+              placeholder="e.g. Impact of EU AI Act on US frontier labs"
+              className="w-full bg-transparent border rounded px-3 py-2 text-sm"
+              style={{ borderColor: "oklch(0.25 0.05 265)" }}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              onClick={() => seedMutation.mutate({ projectId, topic: draftTopic, variant: "preview", suggestedAgentCount: 8 })}
+              disabled={!draftTopic.trim() || seedMutation.isPending}
+            >
+              {seedMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Run research seed
+            </Button>
+            <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

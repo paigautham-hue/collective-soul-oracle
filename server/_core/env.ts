@@ -20,4 +20,11 @@ export const ENV = {
   // Web search for agent tool-use (optional). Tavily, Brave, or SerpAPI compatible.
   webSearchProvider: process.env.WEB_SEARCH_PROVIDER ?? "",   // 'tavily' | 'brave' | 'serpapi' | ''
   webSearchApiKey: process.env.WEB_SEARCH_API_KEY ?? "",
+  // Gemini Deep Research (preview models from Apr 2026 launch).
+  // Falls back to GEMINI_API_KEY if a dedicated key isn't provided.
+  geminiDeepResearchKey: process.env.GEMINI_DEEP_RESEARCH_API_KEY ?? process.env.GEMINI_API_KEY ?? "",
+  deepResearchPreviewModel: process.env.DEEP_RESEARCH_PREVIEW_MODEL ?? "deep-research-preview-04-2026",
+  deepResearchMaxModel: process.env.DEEP_RESEARCH_MAX_MODEL ?? "deep-research-max-preview-04-2026",
+  // Per-user monthly quota for deep-research calls (each call ~$1-10).
+  deepResearchMonthlyQuota: Number(process.env.DEEP_RESEARCH_MONTHLY_QUOTA ?? 25),
 };

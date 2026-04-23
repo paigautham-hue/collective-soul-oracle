@@ -355,6 +355,30 @@ export const catalystEvents = mysqlTable("catalyst_events", {
 export type CatalystEvent = typeof catalystEvents.$inferSelect;
 export type InsertCatalystEvent = typeof catalystEvents.$inferInsert;
 
+// ─── LLM Usage (cost & quota tracking for premium calls e.g. deep-research) ─
+export const llmUsage = mysqlTable("llm_usage", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  projectId: int("projectId"),
+  task: varchar("task", { length: 64 }).notNull(),
+  provider: varchar("provider", { length: 32 }),
+  model: varchar("model", { length: 128 }),
+  monthKey: varchar("monthKey", { length: 7 }).notNull(),    // 'YYYY-MM' for fast monthly aggregates
+  callMs: int("callMs"),
+  inputTokens: int("inputTokens"),
+  outputTokens: int("outputTokens"),
+  costEstimateUsd: float("costEstimateUsd"),
+  status: mysqlEnum("status", ["ok", "error", "throttled"]).default("ok"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type LlmUsage = typeof llmUsage.$inferSelect;
+export type InsertLlmUsage = typeof llmUsage.$inferInsert;
+
+// ─── Reports — extend with deep-research metadata ────────────────────────────
+// (existing reports table is reused; we just store visualizations + flags
+//  in the existing JSON `metadata` column — no schema change needed)
+
 export const shareLinks = mysqlTable("share_links", {
   id: int("id").autoincrement().primaryKey(),
   projectId: int("projectId").notNull(),

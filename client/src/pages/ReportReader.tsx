@@ -200,6 +200,54 @@ export default function ReportReader() {
                 <div className="report-content">
                   <Streamdown>{report.content || ""}</Streamdown>
                 </div>
+
+                {/* Deep Research extras: visualizations + citations */}
+                {(() => {
+                  const meta = (report.metadata ?? {}) as { provenance?: string; model?: string; visualizations?: Array<{ type?: string; title?: string; caption?: string; data?: unknown }>; citations?: Array<{ url?: string; title?: string; snippet?: string }> };
+                  const isDR = meta.provenance === "deep_research";
+                  if (!isDR) return null;
+                  return (
+                    <div className="mt-8 pt-6 border-t" style={{ borderColor: "oklch(0.25 0.03 265 / 0.4)" }}>
+                      <div className="flex items-center gap-2 mb-4 text-xs uppercase tracking-wider" style={{ color: "oklch(0.85 0.20 75)" }}>
+                        <span>✦ Deep Research</span>
+                        {meta.model && <span style={{ color: "oklch(0.55 0.02 265)" }}>· {meta.model}</span>}
+                      </div>
+                      {(meta.visualizations ?? []).length > 0 && (
+                        <div className="space-y-4 mb-6">
+                          <h3 className="font-cinzel text-sm tracking-wider" style={{ color: "oklch(0.65 0.30 280)" }}>VISUALIZATIONS</h3>
+                          {meta.visualizations!.map((v, i) => (
+                            <div key={i} className="p-4 rounded-lg border" style={{ background: "oklch(0.08 0.02 265 / 0.6)", borderColor: "oklch(0.20 0.05 265 / 0.5)" }}>
+                              <div className="text-xs mb-1" style={{ color: "oklch(0.55 0.02 265)" }}>{v.type ?? "chart"}</div>
+                              {v.title && <div className="font-medium text-sm mb-2">{v.title}</div>}
+                              <pre className="text-[10px] overflow-x-auto" style={{ color: "oklch(0.70 0.02 265)" }}>{JSON.stringify(v.data, null, 2)}</pre>
+                              {v.caption && <div className="text-xs mt-2" style={{ color: "oklch(0.65 0.02 265)" }}>{v.caption}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {(meta.citations ?? []).length > 0 && (
+                        <div>
+                          <h3 className="font-cinzel text-sm tracking-wider mb-3" style={{ color: "oklch(0.65 0.30 280)" }}>CITATIONS ({meta.citations!.length})</h3>
+                          <ol className="space-y-1.5 text-xs">
+                            {meta.citations!.map((c, i) => (
+                              <li key={i}>
+                                <span style={{ color: "oklch(0.55 0.02 265)" }}>{i + 1}.</span>{" "}
+                                {c.url ? (
+                                  <a href={c.url} target="_blank" rel="noreferrer" className="hover:underline" style={{ color: "oklch(0.55 0.20 200)" }}>
+                                    {c.title || c.url}
+                                  </a>
+                                ) : (
+                                  <span>{c.title}</span>
+                                )}
+                                {c.snippet && <div className="ml-4 mt-0.5" style={{ color: "oklch(0.55 0.02 265)" }}>{c.snippet.slice(0, 240)}</div>}
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 

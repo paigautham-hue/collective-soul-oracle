@@ -57,6 +57,8 @@ import {
   applyTemplateToProject,
 } from "./persona-library";
 import { ingestSymbolNews, ingestWatchlist, recentCatalysts, isFinanceConfigured } from "./finance-ingest";
+import { runDeepResearch, isDeepResearchConfigured, checkDeepResearchQuota } from "./deep-research";
+import { getMonthlySummary } from "./usage";
 import { extractPredictions, persistExtractedPredictions, summarizeCalibration, brierBinary } from "./predictions";
 import { renderReportPdf, renderReportPptx } from "./report-export";
 import { storagePut } from "./storage";
@@ -453,6 +455,8 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
           projectId: z.number(),
           simulationRunId: z.number().optional(),
           topic: z.string(),
+          useDeepResearch: z.boolean().default(false),
+          deepResearchVariant: z.enum(["preview", "max"]).default("max"),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -462,13 +466,24 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
           userId: ctx.user.id,
           status: "generating",
           title: `Analysis Report: ${input.topic}`,
+          metadata: {
+            useDeepResearch: input.useDeepResearch,
+            deepResearchVariant: input.deepResearchVariant,
+          } as Record<string, unknown>,
         });
 
         const reports = await getReportsByProject(input.projectId);
         const report = reports[0];
 
         // Background report generation
-        generateReportBackground(report.id, input.projectId, input.topic, ctx.user.id).catch(console.error);
+        generateReportBackground({
+          reportId: report.id,
+          projectId: input.projectId,
+          topic: input.topic,
+          userId: ctx.user.id,
+          useDeepResearch: input.useDeepResearch,
+          deepResearchVariant: input.deepResearchVariant,
+        }).catch(console.error);
 
         return report;
       }),
@@ -802,6 +817,109 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
       }),
   }),
 
+  // ─── Deep Research (Gemini Apr-2026 preview models) ─────────────────────────
+  research: router({
+    status: protectedProcedure.query(async ({ ctx }) => {
+      const configured = isDeepResearchConfigured();
+      const quota = configured ? await checkDeepResearchQuota(ctx.user.id) : { usedThisMonth: 0, quota: 0, remaining: 0 };
+      return { configured, ...quota };
+    }),
+
+    // Phase C: seed a project from a topic — runs deep_research, persists
+    // surfaced entities/edges into the knowledge graph, returns suggested agents.
+    seedProject: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        topic: z.string().min(3).max(500),
+        variant: z.enum(["preview", "max"]).default("preview"),
+        suggestedAgentCount: z.number().min(3).max(20).default(8),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+
+        const dr = await runDeepResearch({
+          variant: input.variant,
+          systemInstruction: `You are a research planner for a multi-agent simulation. Surface the key entities, relationships, and stakeholder personas relevant to the topic. Return STRICT JSON with this shape:
+{
+  "summary": "<2-3 sentence framing of the topic>",
+  "entities": [{ "id": "<slug>", "label": "<name>", "type": "<entity_type>", "description": "<one line>" }],
+  "relations": [{ "source": "<entity_id>", "target": "<entity_id>", "label": "<relation>" }],
+  "personas": [{ "name": "<name>", "persona": "<one-paragraph profile>", "ideology": "<short stance>" }]
+}`,
+          prompt: `Topic: "${input.topic}"\nProject type: ${project.projectType}\nProduce up to 20 entities, 25 relations, and exactly ${input.suggestedAgentCount} stakeholder personas. Output JSON only.`,
+          plan: {
+            scope: `Map the entity/persona landscape for "${input.topic}" suitable for a ${project.projectType} multi-agent simulation.`,
+            outputStructure: ["JSON object with summary, entities, relations, personas"],
+            citationRequirement: "preferred",
+            visualizations: false,
+          },
+          userId: ctx.user.id,
+          projectId: input.projectId,
+          task: "research_seed",
+        });
+
+        // Try to parse JSON out of dr.text
+        let parsed: { summary?: string; entities?: Array<{ id: string; label: string; type?: string; description?: string }>; relations?: Array<{ source: string; target: string; label?: string }>; personas?: Array<{ name: string; persona: string; ideology?: string }> } = {};
+        try {
+          const m = dr.text.match(/\{[\s\S]*\}/);
+          parsed = m ? JSON.parse(m[0]) : {};
+        } catch (err) {
+          console.warn("[research.seedProject] JSON parse failed:", err);
+        }
+
+        // Persist nodes
+        const nodes = (parsed.entities ?? []).filter((e) => e.id && e.label).map((e) => ({
+          projectId: input.projectId,
+          nodeId: e.id,
+          label: e.label,
+          type: e.type ?? "entity",
+          description: e.description ?? null,
+        }));
+        if (nodes.length > 0) await upsertGraphNodes(nodes);
+
+        const edges = (parsed.relations ?? []).filter((r) => r.source && r.target).map((r) => ({
+          projectId: input.projectId,
+          sourceId: r.source,
+          targetId: r.target,
+          label: r.label ?? "related_to",
+          weight: 1.0,
+        }));
+        if (edges.length > 0) await upsertGraphEdges(edges);
+
+        // Persist suggested agents
+        const personas = parsed.personas ?? [];
+        const agentRows = personas.filter((p) => p.name && p.persona).map((p) => ({
+          projectId: input.projectId,
+          agentId: `${p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 32)}-${Date.now().toString(36).slice(-4)}`,
+          name: p.name,
+          persona: p.persona,
+          ideology: p.ideology ?? null,
+          platform: "twitter" as const,
+          followers: 0,
+          following: 0,
+        }));
+        if (agentRows.length > 0) await upsertAgents(agentRows);
+
+        // Update project as graph-built
+        await updateProject(input.projectId, { graphBuilt: true, status: "graph_ready", topic: project.topic ?? input.topic });
+
+        return {
+          summary: parsed.summary ?? "",
+          entitiesAdded: nodes.length,
+          relationsAdded: edges.length,
+          agentsAdded: agentRows.length,
+          citations: dr.citations,
+          model: dr.model,
+        };
+      }),
+  }),
+
+  // ─── Usage (deep-research quota etc.) ───────────────────────────────────────
+  usage: router({
+    thisMonth: protectedProcedure.query(({ ctx }) => getMonthlySummary(ctx.user.id)),
+  }),
+
   // ─── Chat ──────────────────────────────────────────────────────────────────
   chat: router({
     messages: protectedProcedure
@@ -875,7 +993,17 @@ async function runSimulationBackground(runId: number, projectId: number, totalRo
   await runSimulation({ runId, projectId, totalRounds, userId });
 }
 
-async function generateReportBackground(reportId: number, projectId: number, topic: string, userId: number) {
+interface ReportBackgroundArgs {
+  reportId: number;
+  projectId: number;
+  topic: string;
+  userId: number;
+  useDeepResearch?: boolean;
+  deepResearchVariant?: "preview" | "max";
+}
+
+async function generateReportBackground(args: ReportBackgroundArgs) {
+  const { reportId, projectId, topic, userId, useDeepResearch, deepResearchVariant } = args;
   try {
     const project = await getProjectById(projectId);
     const agents = await getAgentsByProject(projectId);
@@ -907,13 +1035,62 @@ ${simulationSummary || "No simulation data available yet."}
 
 Write a detailed analytical report with insights, patterns, and predictions.`;
 
-    const content = await routeLLM("report_generation", prompt, systemPrompt);
+    let content = "";
+    let visualizations: unknown[] = [];
+    let citations: unknown[] = [];
+    let provenance: "deep_research" | "standard" = "standard";
+    let modelUsed = "";
+
+    if (useDeepResearch) {
+      try {
+        const { runDeepResearch } = await import("./deep-research");
+        const dr = await runDeepResearch({
+          variant: deepResearchVariant ?? "max",
+          systemInstruction: systemPrompt,
+          prompt: `${prompt}\n\nGround your analysis by cross-referencing current public information about the topic. Cite at least 6 sources.`,
+          plan: {
+            scope: `Synthesize the multi-agent simulation outcome on "${topic}" with current public discourse. Compare in-sim narrative to real-world state.`,
+            sources: project?.projectType === "finance"
+              ? ["sec.gov", "company filings", "Reuters", "Bloomberg", "FT", "WSJ"]
+              : project?.projectType === "technical"
+                ? ["arxiv.org", "ieee.org", "manufacturer datasheets", "regulatory bodies"]
+                : ["mainstream news", "academic", "regulatory filings"],
+            outputStructure: ["Executive Summary", "Key Findings", "Agent Behavior Analysis", "Trend Analysis", "Predictions", "Recommendations"],
+            citationRequirement: "required",
+            visualizations: true,
+            privateContext: [
+              { label: "Top simulation activity", content: simulationSummary || "(none)" },
+              { label: "Agents", content: agents.slice(0, 12).map((a) => `${a.name} — ${a.ideology ?? ""} — ${a.persona ?? ""}`).join("\n") },
+            ],
+          },
+          userId,
+          projectId,
+          task: "report_generation",
+        });
+        content = dr.text;
+        visualizations = dr.visualizations;
+        citations = dr.citations;
+        modelUsed = dr.model;
+        provenance = "deep_research";
+      } catch (err) {
+        console.warn("[Report] Deep Research failed, falling back to standard router:", err);
+        content = await routeLLM("report_generation", prompt, systemPrompt);
+      }
+    } else {
+      content = await routeLLM("report_generation", prompt, systemPrompt);
+    }
 
     await updateReport(reportId, {
       content,
       summary: content.slice(0, 500) + "...",
       status: "completed",
       title: `Simulation Analysis Report: ${topic}`,
+      metadata: {
+        provenance,
+        model: modelUsed || undefined,
+        visualizations,
+        citations,
+      } as Record<string, unknown>,
     });
 
     // Phase 2.7 — extract calibrated predictions from the report and persist
