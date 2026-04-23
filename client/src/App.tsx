@@ -15,6 +15,8 @@ import AdminDashboard from "./pages/AdminDashboard";
 import Branches from "./pages/Branches";
 import Predictions from "./pages/Predictions";
 import PublicShare from "./pages/PublicShare";
+import PersonaLibrary from "./pages/PersonaLibrary";
+import Watchlist from "./pages/Watchlist";
 
 function Router() {
   return (
@@ -28,6 +30,8 @@ function Router() {
       <Route path="/project/:id/chat" component={AgentChat} />
       <Route path="/project/:id/branches" component={Branches} />
       <Route path="/project/:id/predictions" component={Predictions} />
+      <Route path="/project/:id/watchlist" component={Watchlist} />
+      <Route path="/personas" component={PersonaLibrary} />
       <Route path="/share/:slug" component={PublicShare} />
       <Route path="/admin" component={AdminDashboard} />
       <Route path="/404" component={NotFound} />

@@ -236,12 +236,19 @@ function ProjectCard({ project, index }: { project: any; index: number }) {
 
 // ─── Create Project Modal ─────────────────────────────────────────────────────
 function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [projectType, setProjectType] = useState<"narrative" | "technical" | "finance">("narrative");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [topic, setTopic] = useState("");
   const [platform, setPlatform] = useState<"twitter" | "reddit" | "both">("both");
   const [agentCount, setAgentCount] = useState(10);
   const [roundCount, setRoundCount] = useState(5);
+
+  const TYPE_OPTIONS: Array<{ value: "narrative" | "technical" | "finance"; label: string; tagline: string; color: string }> = [
+    { value: "narrative", label: "Narrative",  tagline: "Discourse · sentiment · stakeholder reactions", color: "oklch(0.65 0.30 280)" },
+    { value: "technical", label: "Technical",  tagline: "Engineering · formulation · design reviews",     color: "oklch(0.65 0.20 200)" },
+    { value: "finance",   label: "Finance",    tagline: "Catalysts · watchlist · narrative tracking",    color: "oklch(0.72 0.18 145)" },
+  ];
 
   const createMutation = trpc.projects.create.useMutation({
     onSuccess: (project) => {
@@ -275,12 +282,37 @@ function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCre
         <div className="space-y-4">
           <div>
             <label className="block font-cinzel text-xs tracking-wider text-[oklch(0.65_0.30_280)] mb-2">
+              PROJECT TYPE
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {TYPE_OPTIONS.map((opt) => {
+                const active = projectType === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setProjectType(opt.value)}
+                    className="text-left p-3 rounded-xl border transition-all"
+                    style={{
+                      background: active ? `${opt.color} / 0.15` : "oklch(0.10 0.02 265)",
+                      borderColor: active ? opt.color : "oklch(0.25 0.05 265 / 0.4)",
+                    }}
+                  >
+                    <div className="font-cinzel text-xs tracking-wider mb-1" style={{ color: active ? opt.color : "oklch(0.85 0.02 265)" }}>{opt.label.toUpperCase()}</div>
+                    <div className="font-cormorant text-[10px] leading-tight" style={{ color: "oklch(0.55 0.02 265)" }}>{opt.tagline}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <label className="block font-cinzel text-xs tracking-wider text-[oklch(0.65_0.30_280)] mb-2">
               PROJECT TITLE *
             </label>
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Climate Policy Discourse Analysis"
+              placeholder={projectType === "technical" ? "e.g. RFID asset tag — 6m read range" : projectType === "finance" ? "e.g. Semis catalyst watch — Q4 2026" : "e.g. Climate Policy Discourse Analysis"}
               className="w-full px-4 py-3 rounded-xl bg-[oklch(0.13_0.025_265)] border border-[oklch(0.30_0.04_265_/_0.40)] text-[oklch(0.97_0.005_265)] font-cormorant text-sm placeholder:text-[oklch(0.45_0.02_265)] focus:border-[oklch(0.55_0.28_280_/_0.60)] focus:outline-none transition-colors"
             />
           </div>
@@ -363,7 +395,7 @@ function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCre
             Cancel
           </Button>
           <Button
-            onClick={() => createMutation.mutate({ title, description, topic, platform, agentCount, roundCount })}
+            onClick={() => createMutation.mutate({ title, description, topic, projectType, platform, agentCount, roundCount })}
             disabled={!title.trim() || createMutation.isPending}
             className="flex-1 font-cinzel text-xs tracking-wider bg-[oklch(0.55_0.28_280)] hover:bg-[oklch(0.60_0.30_280)] text-[oklch(0.97_0.005_265)] border border-[oklch(0.65_0.30_280_/_0.40)] glow-indigo disabled:opacity-50"
           >
@@ -375,15 +407,32 @@ function CreateProjectModal({ onClose, onCreated }: { onClose: () => void; onCre
   );
 }
 
+type ProjectTypeFilter = "all" | "narrative" | "technical" | "finance";
+
+const PROJECT_TYPE_META: Record<Exclude<ProjectTypeFilter, "all">, { label: string; color: string; description: string }> = {
+  narrative: { label: "Narrative", color: "oklch(0.65 0.30 280)", description: "Discourse, sentiment, stakeholder reactions" },
+  technical: { label: "Technical", color: "oklch(0.65 0.20 200)", description: "Engineering, formulation, design reviews" },
+  finance:   { label: "Finance",   color: "oklch(0.72 0.18 145)", description: "Catalysts, watchlist-driven narrative tracking" },
+};
+
 // ─── Main Home Page ───────────────────────────────────────────────────────────
 export default function Home() {
   const { user, isAuthenticated, loading } = useAuth();
   const [showCreate, setShowCreate] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<ProjectTypeFilter>("all");
   const utils = trpc.useUtils();
 
   const { data: projects, isLoading: projectsLoading } = trpc.projects.list.useQuery(undefined, {
     enabled: isAuthenticated,
   });
+
+  const filteredProjects = projects?.filter((p) => typeFilter === "all" || (p.projectType ?? "narrative") === typeFilter);
+  const counts = {
+    all: projects?.length ?? 0,
+    narrative: projects?.filter((p) => (p.projectType ?? "narrative") === "narrative").length ?? 0,
+    technical: projects?.filter((p) => p.projectType === "technical").length ?? 0,
+    finance: projects?.filter((p) => p.projectType === "finance").length ?? 0,
+  };
 
   if (loading) {
     return (
@@ -557,6 +606,34 @@ export default function Home() {
           </motion.div>
         )}
 
+        {/* Project Type Tabs */}
+        {projects && projects.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mb-6">
+            {(["all", "narrative", "technical", "finance"] as const).map((t) => {
+              const isActive = typeFilter === t;
+              const meta = t === "all" ? null : PROJECT_TYPE_META[t];
+              const label = t === "all" ? "All projects" : meta!.label;
+              const color = t === "all" ? "oklch(0.55 0.02 265)" : meta!.color;
+              const count = counts[t];
+              return (
+                <button
+                  key={t}
+                  onClick={() => setTypeFilter(t)}
+                  title={meta?.description}
+                  className="px-3 py-1.5 rounded-full text-xs font-jetbrains tracking-wider border transition-all"
+                  style={{
+                    background: isActive ? `${color} / 0.18` : "transparent",
+                    borderColor: isActive ? color : "oklch(0.25 0.05 265 / 0.5)",
+                    color: isActive ? color : "oklch(0.65 0.02 265)",
+                  }}
+                >
+                  {label.toUpperCase()} <span className="ml-1 opacity-60">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Projects Grid */}
         {projectsLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -564,11 +641,16 @@ export default function Home() {
               <div key={i} className="glass-card p-6 h-48 shimmer" />
             ))}
           </div>
-        ) : projects && projects.length > 0 ? (
+        ) : filteredProjects && filteredProjects.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {projects.map((project, i) => (
+            {filteredProjects.map((project, i) => (
               <ProjectCard key={project.id} project={project} index={i} />
             ))}
+          </div>
+        ) : projects && projects.length > 0 ? (
+          <div className="text-center py-16" style={{ color: "oklch(0.55 0.02 265)" }}>
+            <p className="font-cormorant text-lg">No <strong style={{ color: typeFilter !== "all" ? PROJECT_TYPE_META[typeFilter as Exclude<ProjectTypeFilter, "all">].color : undefined }}>{typeFilter}</strong> projects yet.</p>
+            <p className="text-sm mt-2">Create one with the button above.</p>
           </div>
         ) : (
           <motion.div

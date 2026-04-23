@@ -9,6 +9,7 @@ import {
   ArrowLeft, Network, Activity, FileText, MessageSquare,
   Play, ChevronRight, Brain, Zap, Globe, Users, Clock,
   Layers, BarChart3, Wand2, GitBranch, Target, Loader2, Eraser,
+  Briefcase,
 } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -163,6 +164,22 @@ export default function ProjectDetail() {
       color: "oklch(0.72_0.18_145)",
       available: reports && reports.length > 0,
     },
+    {
+      icon: Users,
+      label: "Persona Library",
+      description: "Apply curated expert packs to this project",
+      href: `/personas`,
+      color: "oklch(0.65_0.30_280)",
+      available: true,
+    },
+    ...(project.projectType === "finance" ? [{
+      icon: Briefcase,
+      label: "Watchlist & Catalysts",
+      description: "Track symbols, ingest news, auto-trigger sims",
+      href: `/project/${projectId}/watchlist`,
+      color: "oklch(0.72_0.18_145)",
+      available: true,
+    }] : []),
   ];
 
   return (
@@ -188,7 +205,21 @@ export default function ProjectDetail() {
         >
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-3">
+              <div className="flex items-center gap-3 mb-3 flex-wrap">
+                {(() => {
+                  const t = project.projectType ?? "narrative";
+                  const meta = t === "finance"
+                    ? { label: "FINANCE", color: "oklch(0.72 0.18 145)" }
+                    : t === "technical"
+                      ? { label: "TECHNICAL", color: "oklch(0.65 0.20 200)" }
+                      : { label: "NARRATIVE", color: "oklch(0.65 0.30 280)" };
+                  return (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-jetbrains tracking-wider border"
+                          style={{ borderColor: meta.color, color: meta.color, background: `${meta.color} / 0.10` }}>
+                      {meta.label}
+                    </span>
+                  );
+                })()}
                 <StatusBadge status={project.status} />
                 <span className="font-jetbrains text-xs text-[oklch(0.45_0.02_265)]">
                   {project.platform?.toUpperCase()} · {project.agentCount} AGENTS · {project.roundCount} ROUNDS

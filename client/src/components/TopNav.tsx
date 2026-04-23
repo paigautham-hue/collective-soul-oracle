@@ -12,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Menu, X, Atom, LayoutDashboard, Shield, LogOut, User } from "lucide-react";
+import { Menu, X, Atom, LayoutDashboard, Shield, LogOut, User, Users } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function TopNav() {
@@ -28,6 +28,7 @@ export default function TopNav() {
 
   const navLinks = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/personas", label: "Personas", icon: Users },
   ];
 
   if (user?.role === "admin") {
