@@ -7,4 +7,11 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  // Direct provider keys (optional; multi-LLM router prefers these when present, else falls back to Forge)
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
+  geminiApiKey: process.env.GEMINI_API_KEY ?? "",
+  // Embeddings: model + dim (1536 default for text-embedding-3-small)
+  embeddingsModel: process.env.EMBEDDINGS_MODEL ?? "text-embedding-3-small",
+  embeddingsDim: Number(process.env.EMBEDDINGS_DIM ?? 1536),
 };

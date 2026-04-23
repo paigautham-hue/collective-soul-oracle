@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { useEffect, useRef } from "react";
 import { ChevronRight, FileText, Download, MessageSquare, Loader2, BarChart3 } from "lucide-react";
 import { Streamdown } from "streamdown";
+import { toast } from "sonner";
+import ShareManager from "@/components/ShareManager";
 
 export default function ReportReader() {
   const params = useParams<{ id: string; reportId: string }>();
@@ -16,6 +18,15 @@ export default function ReportReader() {
 
   const { data: project } = trpc.projects.get.useQuery({ id: projectId }, { enabled: !!projectId });
   const { data: report, refetch } = trpc.reports.get.useQuery({ id: reportId }, { enabled: !!reportId });
+
+  const exportPdfMutation = trpc.reports.exportPdf.useMutation({
+    onSuccess: (d) => { toast.success("PDF ready"); window.open(d.url, "_blank"); },
+    onError: (err) => toast.error(err.message),
+  });
+  const exportPptxMutation = trpc.reports.exportPptx.useMutation({
+    onSuccess: (d) => { toast.success("PPTX ready"); window.open(d.url, "_blank"); },
+    onError: (err) => toast.error(err.message),
+  });
 
   // Poll while generating
   useEffect(() => {
@@ -112,6 +123,25 @@ export default function ReportReader() {
                   >
                     <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
                     Chat with Agents
+                  </Button>
+                  <ShareManager projectId={projectId} reportId={reportId} />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => exportPdfMutation.mutate({ reportId })}
+                    disabled={exportPdfMutation.isPending}
+                    className="font-cormorant text-sm border border-[oklch(0.25_0.05_265)]"
+                  >
+                    Export PDF
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => exportPptxMutation.mutate({ reportId })}
+                    disabled={exportPptxMutation.isPending}
+                    className="font-cormorant text-sm border border-[oklch(0.25_0.05_265)]"
+                  >
+                    Export PPTX
                   </Button>
                 </div>
               </div>

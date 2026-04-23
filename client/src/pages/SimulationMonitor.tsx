@@ -6,6 +6,7 @@ import TopNav from "@/components/TopNav";
 import { Button } from "@/components/ui/button";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
+import { io, type Socket } from "socket.io-client";
 import {
   ChevronRight, Activity, Square, FileText, Users,
   Twitter, MessageSquare, Zap, Clock, BarChart3,
@@ -87,7 +88,7 @@ export default function SimulationMonitor() {
   const runId = parseInt(params.runId || "0");
   const [, navigate] = useLocation();
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { data: project } = trpc.projects.get.useQuery({ id: projectId }, { enabled: !!projectId });
@@ -123,18 +124,59 @@ export default function SimulationMonitor() {
     setLogs(newLogs);
   }, [actions]);
 
-  // Poll for updates if simulation is running
+  // Live updates via Socket.IO; polling is now a slow fallback only.
   useEffect(() => {
+    if (!runId) return;
+    if (!socketRef.current) {
+      socketRef.current = io({ path: "/api/socket.io" });
+    }
+    const sock = socketRef.current;
+    sock.emit("join:simulation", runId);
+
+    const onLog = (data: { round: number; agentName: string; platform: string; action: string; content: string; logLevel: string; timestamp: string }) => {
+      setLogs((prev) => {
+        const id = `live-${data.timestamp}-${data.agentName}-${prev.length}`;
+        const type: LogEntry["type"] =
+          data.action === "posted" ? "post" :
+          data.action === "replied" ? "reply" :
+          data.action === "observed" ? "system" : "action";
+        return [...prev, {
+          id,
+          timestamp: data.timestamp,
+          type,
+          agentName: data.agentName,
+          platform: data.platform,
+          content: data.content,
+          round: data.round,
+        }];
+      });
+    };
+    const onStatus = (s: { status: string; currentRound: number; totalRounds: number }) => {
+      // Mirror status into the cached query without blasting the network.
+      refetchSim();
+      if (s.status === "completed" || s.status === "failed") {
+        refetchActions();
+      }
+    };
+
+    sock.on("log", onLog);
+    sock.on("status", onStatus);
+
+    // Light heartbeat fallback every 15s (in case Socket.IO disconnects).
     if (simulation?.status === "running") {
       pollRef.current = setInterval(() => {
         refetchSim();
         refetchActions();
-      }, 3000);
+      }, 15000);
     }
+
     return () => {
+      sock.emit("leave:simulation", runId);
+      sock.off("log", onLog);
+      sock.off("status", onStatus);
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [simulation?.status]);
+  }, [runId, simulation?.status]);
 
   const progress = simulation
     ? Math.round(((simulation.currentRound || 0) / (simulation.totalRounds || 1)) * 100)

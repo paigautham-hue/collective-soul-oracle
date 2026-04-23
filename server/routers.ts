@@ -31,8 +31,24 @@ import {
   getChatMessages,
   getAllUsers,
 } from "./db";
-import { invokeLLM } from "./_core/llm";
 import { notifyOwner } from "./_core/notification";
+import { completeText, type LLMTask } from "./llm-router";
+import {
+  createSimulationBranch,
+  getBranchesByProject,
+  getPredictionsByProject,
+  resolvePrediction as resolvePredictionDb,
+  createShareLink,
+  getShareLinkBySlug,
+  bumpShareLinkViews,
+  revokeShareLink,
+  listShareLinksByProject,
+  getGraphEventsByProject,
+} from "./db-extensions";
+import { extractPredictions, persistExtractedPredictions, summarizeCalibration, brierBinary } from "./predictions";
+import { renderReportPdf, renderReportPptx } from "./report-export";
+import { storagePut } from "./storage";
+import { nanoid } from "nanoid";
 
 // ─── Admin Procedure ──────────────────────────────────────────────────────────
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -42,17 +58,18 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
-// ─── LLM Router (server-side only) ───────────────────────────────────────────
-async function routeLLM(task: "graph_extraction" | "persona_generation" | "report_generation" | "chat", prompt: string, systemPrompt?: string) {
-  const messages: { role: "system" | "user"; content: string }[] = [];
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  messages.push({ role: "user", content: prompt });
-
+// ─── LLM Router (legacy shim → new task-routed multi-LLM client) ─────────────
+// Maps the legacy 4-task signature onto the new LLMTask vocabulary so existing
+// call sites keep working while we benefit from per-task model selection
+// (Claude Opus 4.7 / Sonnet 4.6 / Haiku 4.5, Gemini 2.5, GPT-5) when keys are set.
+async function routeLLM(
+  task: "graph_extraction" | "persona_generation" | "report_generation" | "chat",
+  prompt: string,
+  systemPrompt?: string,
+): Promise<string> {
+  const mapped: LLMTask = task === "chat" ? "agent_chat" : task;
   try {
-    const response = await invokeLLM({ messages });
-    const content = response?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Empty LLM response");
-    return content as string;
+    return await completeText(mapped, prompt, systemPrompt);
   } catch (err) {
     console.error(`[LLM] ${task} failed:`, err);
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "LLM generation failed" });
@@ -313,14 +330,16 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
           systemPrompt = `You are the Oracle Report Agent, an expert AI analyst specializing in multi-agent social simulations.\nYou have deep knowledge of the simulation project: ${project.title ?? "this project"}.\nTopic: ${project.topic ?? project.title ?? "this topic"}.\nThere are ${agentsList.length} agents in this simulation.\nProvide insightful, analytical responses about simulation results, trends, agent behaviors, and predictions. Be precise and scholarly.`;
         }
         const historyMessages = input.history.map((h: any) => ({ role: h.role as "user" | "assistant", content: h.content as string }));
-        const llmMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
-          { role: "system", content: systemPrompt },
-          ...historyMessages,
-          { role: "user", content: input.message },
-        ];
-        const llmResponse = await invokeLLM({ messages: llmMessages });
-        const rawReply = llmResponse?.choices?.[0]?.message?.content;
-        const reply: string = typeof rawReply === "string" ? rawReply : "I cannot respond at this time.";
+        const { complete } = await import("./llm-router");
+        const llmResult = await complete({
+          task: "agent_chat",
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...historyMessages,
+            { role: "user", content: input.message },
+          ],
+        });
+        const reply: string = llmResult.text || "I cannot respond at this time.";
         await addChatMessage({ projectId: input.projectId, userId: ctx.user.id, agentId: input.agentId !== undefined ? String(input.agentId) : undefined, role: "user", content: input.message });
         await addChatMessage({ projectId: input.projectId, userId: ctx.user.id, agentId: input.agentId !== undefined ? String(input.agentId) : undefined, role: "assistant", content: `[${agentName}] ${reply}` });
         return { response: reply, agentName };
@@ -424,6 +443,201 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
 
         return report;
       }),
+
+    // Phase 2.9 — render report to PDF / PPTX, upload to S3, return signed URL.
+    exportPdf: protectedProcedure
+      .input(z.object({ reportId: z.number() }))
+      .mutation(async ({ input }) => {
+        const report = await getReportById(input.reportId);
+        if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+        const bytes = await renderReportPdf(report);
+        const key = `reports/${report.projectId}/${input.reportId}-${Date.now()}.pdf`;
+        const { url } = await storagePut(key, Buffer.from(bytes), "application/pdf");
+        await updateReport(input.reportId, { pdfUrl: url, pdfKey: key });
+        return { url, key };
+      }),
+
+    exportPptx: protectedProcedure
+      .input(z.object({ reportId: z.number() }))
+      .mutation(async ({ input }) => {
+        const report = await getReportById(input.reportId);
+        if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+        const buf = await renderReportPptx(report);
+        const key = `reports/${report.projectId}/${input.reportId}-${Date.now()}.pptx`;
+        const { url } = await storagePut(key, buf, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        return { url, key };
+      }),
+  }),
+
+  // ─── Phase 2.6 — Counterfactual Branches ───────────────────────────────────
+  branches: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => getBranchesByProject(input.projectId)),
+
+    create: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        parentRunId: z.number().optional(),
+        label: z.string().min(1).max(120),
+        totalRounds: z.number().min(1).max(20).default(5),
+        platform: z.enum(["twitter", "reddit", "both"]).default("both"),
+        perturbation: z.object({
+          ideologyShift: z.string().optional(),
+          removeAgentIds: z.array(z.string()).optional(),
+          topicReframe: z.string().optional(),
+        }),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+
+        await createSimulationRun({
+          projectId: input.projectId,
+          userId: ctx.user.id,
+          status: "pending",
+          totalRounds: input.totalRounds,
+          platform: input.platform,
+        });
+        const runs = await getSimulationRunsByProject(input.projectId);
+        const newRun = runs[0];
+
+        const branch = await createSimulationBranch({
+          projectId: input.projectId,
+          parentRunId: input.parentRunId ?? null,
+          simulationRunId: newRun.id,
+          label: input.label,
+          perturbation: input.perturbation,
+        });
+
+        await updateSimulationRun(newRun.id, { status: "running", startedAt: new Date() });
+        const { runSimulation } = await import("./simulation-runner");
+        runSimulation({
+          runId: newRun.id,
+          projectId: input.projectId,
+          totalRounds: input.totalRounds,
+          userId: ctx.user.id,
+          perturbation: input.perturbation,
+        }).catch((err) => console.error("[branch] sim failed:", err));
+
+        return { branch, simulationRunId: newRun.id };
+      }),
+
+    compare: protectedProcedure
+      .input(z.object({ runIdA: z.number(), runIdB: z.number() }))
+      .query(async ({ input }) => {
+        const [a, b] = await Promise.all([
+          getSimulationLogs(input.runIdA, 200),
+          getSimulationLogs(input.runIdB, 200),
+        ]);
+        const summarize = (logs: typeof a) => {
+          const byAgent = new Map<string, number>();
+          const byAction = new Map<string, number>();
+          for (const l of logs) {
+            byAgent.set(l.agentName ?? "?", (byAgent.get(l.agentName ?? "?") ?? 0) + 1);
+            byAction.set(l.action ?? "?", (byAction.get(l.action ?? "?") ?? 0) + 1);
+          }
+          return {
+            total: logs.length,
+            byAgent: Object.fromEntries(byAgent),
+            byAction: Object.fromEntries(byAction),
+            sample: logs.slice(0, 10).map((l) => ({ round: l.round, agentName: l.agentName, action: l.action, content: l.content })),
+          };
+        };
+        return { a: summarize(a), b: summarize(b) };
+      }),
+  }),
+
+  // ─── Phase 2.7 + 2.8 — Predictions & Calibration ────────────────────────────
+  predictions: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => getPredictionsByProject(input.projectId)),
+
+    calibration: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => summarizeCalibration(input.projectId)),
+
+    resolve: adminProcedure
+      .input(z.object({
+        id: z.number(),
+        groundTruth: z.string().min(1),
+        groundTruthSource: z.string().optional(),
+        occurred: z.boolean(),
+        confidence: z.number().min(0).max(1),
+      }))
+      .mutation(async ({ input }) => {
+        const brier = brierBinary(input.confidence, input.occurred);
+        await resolvePredictionDb(input.id, {
+          groundTruth: input.groundTruth,
+          groundTruthSource: input.groundTruthSource ?? null,
+          brierScore: brier,
+        });
+        return { brier };
+      }),
+  }),
+
+  // ─── Phase 2.10 — Public Share Links ────────────────────────────────────────
+  share: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => listShareLinksByProject(input.projectId)),
+
+    create: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        reportId: z.number().optional(),
+        scope: z.enum(["report", "project_readonly"]).default("report"),
+        expiresInDays: z.number().min(1).max(365).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = nanoid(16);
+        const expiresAt = input.expiresInDays
+          ? new Date(Date.now() + input.expiresInDays * 86400_000)
+          : null;
+        const link = await createShareLink({
+          projectId: input.projectId,
+          reportId: input.reportId ?? null,
+          userId: ctx.user.id,
+          slug,
+          scope: input.scope,
+          expiresAt,
+        });
+        return link;
+      }),
+
+    revoke: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await revokeShareLink(input.id);
+        return { success: true };
+      }),
+
+    // Public — no auth. Used by /share/:slug page and external REST consumers.
+    publicGet: publicProcedure
+      .input(z.object({ slug: z.string().min(8).max(64) }))
+      .query(async ({ input }) => {
+        const link = await getShareLinkBySlug(input.slug);
+        if (!link) throw new TRPCError({ code: "NOT_FOUND" });
+        if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Link expired" });
+        }
+        await bumpShareLinkViews(link.id);
+        const project = await getProjectById(link.projectId);
+        const report = link.reportId ? await getReportById(link.reportId) : null;
+        return {
+          scope: link.scope,
+          project: project ? { id: project.id, title: project.title, description: project.description, topic: project.topic } : null,
+          report: report ? { id: report.id, title: report.title, summary: report.summary, content: report.content } : null,
+        };
+      }),
+  }),
+
+  // ─── Graph Events feed (live timeline of graph mutations) ──────────────────
+  graphEvents: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number(), limit: z.number().default(100) }))
+      .query(({ input }) => getGraphEventsByProject(input.projectId, input.limit)),
   }),
 
   // ─── Chat ──────────────────────────────────────────────────────────────────
@@ -493,58 +707,10 @@ export type AppRouter = typeof appRouter;
 
 // ─── Background Tasks ─────────────────────────────────────────────────────────
 async function runSimulationBackground(runId: number, projectId: number, totalRounds: number, userId: number) {
-  try {
-    const agents = await getAgentsByProject(projectId);
-    const project = await getProjectById(projectId);
-
-    for (let round = 1; round <= totalRounds; round++) {
-      await updateSimulationRun(runId, { currentRound: round });
-
-      // Simulate agent actions for this round
-      for (const agent of agents.slice(0, Math.min(agents.length, 5))) {
-        const action = ["posted", "retweeted", "replied", "liked", "shared"][Math.floor(Math.random() * 5)];
-        const platforms = ["twitter", "reddit"];
-        const platform = platforms[Math.floor(Math.random() * platforms.length)];
-
-        const content = await routeLLM(
-          "chat",
-          `As ${agent.name} (${agent.persona}), write a short social media ${action} about: "${project?.topic || "the current topic"}". Keep it under 280 characters.`,
-        ).catch(() => `[${agent.name}] ${action} about the topic.`);
-
-        await addSimulationLog({
-          simulationRunId: runId,
-          projectId,
-          round,
-          agentName: agent.name,
-          platform,
-          action,
-          content,
-          logLevel: "info",
-        });
-
-        // Small delay to avoid rate limiting
-        await new Promise((r) => setTimeout(r, 500));
-      }
-
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-
-    await updateSimulationRun(runId, { status: "completed", completedAt: new Date() });
-    await updateProject(projectId, { status: "completed" });
-
-    await notifyOwner({
-      title: "Simulation Completed",
-      content: `Simulation run #${runId} for project #${projectId} has completed successfully after ${totalRounds} rounds.`,
-    });
-  } catch (err) {
-    console.error("[Simulation] Background task failed:", err);
-    await updateSimulationRun(runId, {
-      status: "failed",
-      errorMessage: err instanceof Error ? err.message : "Unknown error",
-      completedAt: new Date(),
-    });
-    await updateProject(projectId, { status: "failed" });
-  }
+  // Delegated to the new memory-aware multi-agent runner.
+  // Lazy import to avoid circular module load.
+  const { runSimulation } = await import("./simulation-runner");
+  await runSimulation({ runId, projectId, totalRounds, userId });
 }
 
 async function generateReportBackground(reportId: number, projectId: number, topic: string, userId: number) {
@@ -587,6 +753,22 @@ Write a detailed analytical report with insights, patterns, and predictions.`;
       status: "completed",
       title: `Simulation Analysis Report: ${topic}`,
     });
+
+    // Phase 2.7 — extract calibrated predictions from the report and persist
+    // them so they can later be resolved against ground truth (Phase 2.8 eval).
+    try {
+      const extracted = await extractPredictions(content);
+      if (extracted.length > 0) {
+        await persistExtractedPredictions({
+          projectId,
+          reportId,
+          simulationRunId: latestRun?.id ?? null,
+          predictions: extracted,
+        });
+      }
+    } catch (err) {
+      console.warn("[Report] prediction extraction skipped:", err);
+    }
 
     await updateProject(projectId, { status: "completed" });
 

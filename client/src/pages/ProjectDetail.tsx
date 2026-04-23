@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Network, Activity, FileText, MessageSquare,
   Play, ChevronRight, Brain, Zap, Globe, Users, Clock,
-  Layers, BarChart3, Wand2,
+  Layers, BarChart3, Wand2, GitBranch, Target,
 } from "lucide-react";
 
 function StatusBadge({ status }: { status: string }) {
@@ -126,6 +126,22 @@ export default function ProjectDetail() {
       href: `/project/${projectId}/chat`,
       color: "oklch(0.65_0.30_280)",
       available: agents && agents.length > 0,
+    },
+    {
+      icon: GitBranch,
+      label: "Counterfactual Branches",
+      description: simulations && simulations.length > 0 ? "Run alternate simulations & compare" : "Run baseline simulation first",
+      href: `/project/${projectId}/branches`,
+      color: "oklch(0.65_0.20_200)",
+      available: simulations && simulations.length > 0,
+    },
+    {
+      icon: Target,
+      label: "Predictions & Calibration",
+      description: reports && reports.length > 0 ? "Calibrated forecasts from reports" : "Generate a report first",
+      href: `/project/${projectId}/predictions`,
+      color: "oklch(0.72_0.18_145)",
+      available: reports && reports.length > 0,
     },
   ];
 

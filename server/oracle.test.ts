@@ -52,6 +52,17 @@ vi.mock("./_core/llm", () => ({
   }),
 }));
 
+vi.mock("./llm-router", () => ({
+  complete: vi.fn().mockResolvedValue({
+    text: "Mocked LLM response for testing.",
+    json: undefined,
+    provider: "forge",
+    model: "mock",
+  }),
+  completeText: vi.fn().mockResolvedValue("Mocked LLM response for testing."),
+  completeJson: vi.fn().mockResolvedValue({}),
+}));
+
 vi.mock("./_core/notification", () => ({
   notifyOwner: vi.fn().mockResolvedValue(true),
 }));

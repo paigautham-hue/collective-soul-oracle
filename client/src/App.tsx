@@ -12,6 +12,9 @@ import SimulationMonitor from "./pages/SimulationMonitor";
 import ReportReader from "./pages/ReportReader";
 import AgentChat from "./pages/AgentChat";
 import AdminDashboard from "./pages/AdminDashboard";
+import Branches from "./pages/Branches";
+import Predictions from "./pages/Predictions";
+import PublicShare from "./pages/PublicShare";
 
 function Router() {
   return (
@@ -23,6 +26,9 @@ function Router() {
       <Route path="/project/:id/simulation/:runId" component={SimulationMonitor} />
       <Route path="/project/:id/report/:reportId" component={ReportReader} />
       <Route path="/project/:id/chat" component={AgentChat} />
+      <Route path="/project/:id/branches" component={Branches} />
+      <Route path="/project/:id/predictions" component={Predictions} />
+      <Route path="/share/:slug" component={PublicShare} />
       <Route path="/admin" component={AdminDashboard} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
