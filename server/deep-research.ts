@@ -102,10 +102,9 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
       maxOutputTokens: args.variant === "max" ? 16384 : 8192,
       temperature: 0.4,
     },
-    // If the deep-research endpoint accepts these specifically, great;
-    // if not, they're ignored by the standard endpoint.
-    researchPlan: args.plan ?? undefined,
-    enableVisualizations: args.plan?.visualizations ?? true,
+    // Note: researchPlan and enableVisualizations are NOT valid fields in the
+    // standard Gemini generateContent API — they caused 400 errors. The plan
+    // is already embedded as structured text in userText via buildPlanBlock().
   };
   if (args.systemInstruction) {
     body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
