@@ -74,6 +74,15 @@ export default function ProjectDetail() {
   const [deepResearchOpen, setDeepResearchOpen] = useState(false);
   const [deepResearchVariant, setDeepResearchVariant] = useState<"preview" | "max">("max");
 
+  const utils = trpc.useUtils();
+  const deleteSimMutation = trpc.simulations.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Simulation deleted");
+      utils.simulations.list.invalidate({ projectId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   if (!isAuthenticated) {
     return <div className="min-h-screen nebula-bg flex items-center justify-center">
       <p className="font-cormorant text-[oklch(0.60_0.02_265)]">Please sign in to view this project.</p>
@@ -378,10 +387,11 @@ export default function ProjectDetail() {
               </div>
             </div>
             <div className="space-y-3">
-              {simulations.slice(0, 5).map((sim) => (
-                <Link key={sim.id} href={`/project/${projectId}/simulation/${sim.id}`}>
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-[oklch(0.10_0.02_265_/_0.50)] hover:bg-[oklch(0.13_0.025_265_/_0.60)] border border-[oklch(0.25_0.03_265_/_0.30)] transition-all cursor-pointer group">
-                    <div className="flex items-center gap-3">
+              {simulations.slice(0, 5).map((sim) => {
+                const isLive = sim.status === "running" || sim.status === "pending";
+                return (
+                  <div key={sim.id} className="flex items-center justify-between p-3 rounded-xl bg-[oklch(0.10_0.02_265_/_0.50)] hover:bg-[oklch(0.13_0.025_265_/_0.60)] border border-[oklch(0.25_0.03_265_/_0.30)] transition-all group">
+                    <Link href={`/project/${projectId}/simulation/${sim.id}`} className="flex items-center gap-3 flex-1 cursor-pointer">
                       <Activity className="w-4 h-4 text-[oklch(0.55_0.28_280_/_0.70)]" />
                       <div>
                         <p className="font-cormorant text-sm text-[oklch(0.97_0.005_265)]">
@@ -391,7 +401,7 @@ export default function ProjectDetail() {
                           {new Date(sim.createdAt).toLocaleString()}
                         </p>
                       </div>
-                    </div>
+                    </Link>
                     <div className="flex items-center gap-2">
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-jetbrains ${
                         sim.status === "running" ? "status-running" :
@@ -401,11 +411,41 @@ export default function ProjectDetail() {
                         {sim.status === "running" && <span className="w-1.5 h-1.5 rounded-full bg-[oklch(0.72_0.18_145)] mr-1.5 animate-pulse" />}
                         {sim.status}
                       </span>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={isLive || deleteSimMutation.isPending}
+                            title={isLive ? "Stop the simulation before deleting" : "Delete this simulation"}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 p-0 text-[oklch(0.65_0.20_25)] hover:bg-[oklch(0.30_0.15_25_/_0.15)]"
+                          >
+                            <Eraser className="w-3.5 h-3.5" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete simulation #{sim.id}?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This permanently deletes the run and all its logs. Reports, agent memories, predictions, and counterfactual branches that referenced this run are kept.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => deleteSimMutation.mutate({ id: sim.id })}
+                              className="bg-[oklch(0.55_0.20_25)] hover:bg-[oklch(0.50_0.22_25)]"
+                            >
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                       <ChevronRight className="w-4 h-4 text-[oklch(0.40_0.02_265)] group-hover:text-[oklch(0.65_0.30_280)] transition-colors" />
                     </div>
                   </div>
-                </Link>
-              ))}
+                );
+              })}
             </div>
           </motion.div>
         )}

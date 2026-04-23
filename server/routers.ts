@@ -21,6 +21,7 @@ import {
   getSimulationRunsByProject,
   getSimulationRunById,
   updateSimulationRun,
+  deleteSimulationRun,
   getSimulationLogs,
   addSimulationLog,
   createReport,
@@ -412,6 +413,25 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await updateSimulationRun(input.id, { status: "stopped", completedAt: new Date() });
+        return { success: true };
+      }),
+
+    // Delete a simulation run + its logs. Project owner or admin only.
+    // Active runs must be stopped first to avoid races with the background runner.
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const run = await getSimulationRunById(input.id);
+        if (!run) throw new TRPCError({ code: "NOT_FOUND" });
+        const project = await getProjectById(run.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+        if (project.userId !== ctx.user.id && ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only the project owner or an admin can delete simulations" });
+        }
+        if (run.status === "running" || run.status === "pending") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Stop the simulation before deleting it" });
+        }
+        await deleteSimulationRun(input.id);
         return { success: true };
       }),
 

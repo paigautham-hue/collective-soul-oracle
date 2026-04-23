@@ -209,6 +209,16 @@ export async function updateSimulationRun(id: number, data: Partial<InsertSimula
   await db.update(simulationRuns).set(data).where(eq(simulationRuns.id, id));
 }
 
+// Hard-delete a simulation run + its logs. Branches that reference it have
+// their parentRunId nulled out (we don't cascade-delete branches). Agent
+// memories are kept — they're cross-run institutional memory.
+export async function deleteSimulationRun(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(simulationLogs).where(eq(simulationLogs.simulationRunId, id));
+  await db.delete(simulationRuns).where(eq(simulationRuns.id, id));
+}
+
 // ─── Simulation Logs ──────────────────────────────────────────────────────────
 export async function addSimulationLog(data: InsertSimulationLog) {
   const db = await getDb();
