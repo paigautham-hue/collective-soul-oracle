@@ -33,6 +33,22 @@ import {
 } from "./db";
 import { notifyOwner } from "./_core/notification";
 import { completeText, type LLMTask } from "./llm-router";
+import {
+  createSimulationBranch,
+  getBranchesByProject,
+  getPredictionsByProject,
+  resolvePrediction as resolvePredictionDb,
+  createShareLink,
+  getShareLinkBySlug,
+  bumpShareLinkViews,
+  revokeShareLink,
+  listShareLinksByProject,
+  getGraphEventsByProject,
+} from "./db-extensions";
+import { extractPredictions, persistExtractedPredictions, summarizeCalibration, brierBinary } from "./predictions";
+import { renderReportPdf, renderReportPptx } from "./report-export";
+import { storagePut } from "./storage";
+import { nanoid } from "nanoid";
 
 // ─── Admin Procedure ──────────────────────────────────────────────────────────
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -427,6 +443,201 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
 
         return report;
       }),
+
+    // Phase 2.9 — render report to PDF / PPTX, upload to S3, return signed URL.
+    exportPdf: protectedProcedure
+      .input(z.object({ reportId: z.number() }))
+      .mutation(async ({ input }) => {
+        const report = await getReportById(input.reportId);
+        if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+        const bytes = await renderReportPdf(report);
+        const key = `reports/${report.projectId}/${input.reportId}-${Date.now()}.pdf`;
+        const { url } = await storagePut(key, Buffer.from(bytes), "application/pdf");
+        await updateReport(input.reportId, { pdfUrl: url, pdfKey: key });
+        return { url, key };
+      }),
+
+    exportPptx: protectedProcedure
+      .input(z.object({ reportId: z.number() }))
+      .mutation(async ({ input }) => {
+        const report = await getReportById(input.reportId);
+        if (!report) throw new TRPCError({ code: "NOT_FOUND" });
+        const buf = await renderReportPptx(report);
+        const key = `reports/${report.projectId}/${input.reportId}-${Date.now()}.pptx`;
+        const { url } = await storagePut(key, buf, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        return { url, key };
+      }),
+  }),
+
+  // ─── Phase 2.6 — Counterfactual Branches ───────────────────────────────────
+  branches: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => getBranchesByProject(input.projectId)),
+
+    create: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        parentRunId: z.number().optional(),
+        label: z.string().min(1).max(120),
+        totalRounds: z.number().min(1).max(20).default(5),
+        platform: z.enum(["twitter", "reddit", "both"]).default("both"),
+        perturbation: z.object({
+          ideologyShift: z.string().optional(),
+          removeAgentIds: z.array(z.string()).optional(),
+          topicReframe: z.string().optional(),
+        }),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+
+        await createSimulationRun({
+          projectId: input.projectId,
+          userId: ctx.user.id,
+          status: "pending",
+          totalRounds: input.totalRounds,
+          platform: input.platform,
+        });
+        const runs = await getSimulationRunsByProject(input.projectId);
+        const newRun = runs[0];
+
+        const branch = await createSimulationBranch({
+          projectId: input.projectId,
+          parentRunId: input.parentRunId ?? null,
+          simulationRunId: newRun.id,
+          label: input.label,
+          perturbation: input.perturbation,
+        });
+
+        await updateSimulationRun(newRun.id, { status: "running", startedAt: new Date() });
+        const { runSimulation } = await import("./simulation-runner");
+        runSimulation({
+          runId: newRun.id,
+          projectId: input.projectId,
+          totalRounds: input.totalRounds,
+          userId: ctx.user.id,
+          perturbation: input.perturbation,
+        }).catch((err) => console.error("[branch] sim failed:", err));
+
+        return { branch, simulationRunId: newRun.id };
+      }),
+
+    compare: protectedProcedure
+      .input(z.object({ runIdA: z.number(), runIdB: z.number() }))
+      .query(async ({ input }) => {
+        const [a, b] = await Promise.all([
+          getSimulationLogs(input.runIdA, 200),
+          getSimulationLogs(input.runIdB, 200),
+        ]);
+        const summarize = (logs: typeof a) => {
+          const byAgent = new Map<string, number>();
+          const byAction = new Map<string, number>();
+          for (const l of logs) {
+            byAgent.set(l.agentName ?? "?", (byAgent.get(l.agentName ?? "?") ?? 0) + 1);
+            byAction.set(l.action ?? "?", (byAction.get(l.action ?? "?") ?? 0) + 1);
+          }
+          return {
+            total: logs.length,
+            byAgent: Object.fromEntries(byAgent),
+            byAction: Object.fromEntries(byAction),
+            sample: logs.slice(0, 10).map((l) => ({ round: l.round, agentName: l.agentName, action: l.action, content: l.content })),
+          };
+        };
+        return { a: summarize(a), b: summarize(b) };
+      }),
+  }),
+
+  // ─── Phase 2.7 + 2.8 — Predictions & Calibration ────────────────────────────
+  predictions: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => getPredictionsByProject(input.projectId)),
+
+    calibration: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => summarizeCalibration(input.projectId)),
+
+    resolve: adminProcedure
+      .input(z.object({
+        id: z.number(),
+        groundTruth: z.string().min(1),
+        groundTruthSource: z.string().optional(),
+        occurred: z.boolean(),
+        confidence: z.number().min(0).max(1),
+      }))
+      .mutation(async ({ input }) => {
+        const brier = brierBinary(input.confidence, input.occurred);
+        await resolvePredictionDb(input.id, {
+          groundTruth: input.groundTruth,
+          groundTruthSource: input.groundTruthSource ?? null,
+          brierScore: brier,
+        });
+        return { brier };
+      }),
+  }),
+
+  // ─── Phase 2.10 — Public Share Links ────────────────────────────────────────
+  share: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(({ input }) => listShareLinksByProject(input.projectId)),
+
+    create: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        reportId: z.number().optional(),
+        scope: z.enum(["report", "project_readonly"]).default("report"),
+        expiresInDays: z.number().min(1).max(365).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const slug = nanoid(16);
+        const expiresAt = input.expiresInDays
+          ? new Date(Date.now() + input.expiresInDays * 86400_000)
+          : null;
+        const link = await createShareLink({
+          projectId: input.projectId,
+          reportId: input.reportId ?? null,
+          userId: ctx.user.id,
+          slug,
+          scope: input.scope,
+          expiresAt,
+        });
+        return link;
+      }),
+
+    revoke: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await revokeShareLink(input.id);
+        return { success: true };
+      }),
+
+    // Public — no auth. Used by /share/:slug page and external REST consumers.
+    publicGet: publicProcedure
+      .input(z.object({ slug: z.string().min(8).max(64) }))
+      .query(async ({ input }) => {
+        const link = await getShareLinkBySlug(input.slug);
+        if (!link) throw new TRPCError({ code: "NOT_FOUND" });
+        if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Link expired" });
+        }
+        await bumpShareLinkViews(link.id);
+        const project = await getProjectById(link.projectId);
+        const report = link.reportId ? await getReportById(link.reportId) : null;
+        return {
+          scope: link.scope,
+          project: project ? { id: project.id, title: project.title, description: project.description, topic: project.topic } : null,
+          report: report ? { id: report.id, title: report.title, summary: report.summary, content: report.content } : null,
+        };
+      }),
+  }),
+
+  // ─── Graph Events feed (live timeline of graph mutations) ──────────────────
+  graphEvents: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.number(), limit: z.number().default(100) }))
+      .query(({ input }) => getGraphEventsByProject(input.projectId, input.limit)),
   }),
 
   // ─── Chat ──────────────────────────────────────────────────────────────────
@@ -542,6 +753,22 @@ Write a detailed analytical report with insights, patterns, and predictions.`;
       status: "completed",
       title: `Simulation Analysis Report: ${topic}`,
     });
+
+    // Phase 2.7 — extract calibrated predictions from the report and persist
+    // them so they can later be resolved against ground truth (Phase 2.8 eval).
+    try {
+      const extracted = await extractPredictions(content);
+      if (extracted.length > 0) {
+        await persistExtractedPredictions({
+          projectId,
+          reportId,
+          simulationRunId: latestRun?.id ?? null,
+          predictions: extracted,
+        });
+      }
+    } catch (err) {
+      console.warn("[Report] prediction extraction skipped:", err);
+    }
 
     await updateProject(projectId, { status: "completed" });
 

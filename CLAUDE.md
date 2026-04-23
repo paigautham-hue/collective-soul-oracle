@@ -161,8 +161,27 @@ pnpm format           # prettier
 
 ---
 
-## Current Status (as of audit)
+## Current Status
 
-- ✅ All 9 base tables, all routers, all 10 pages, 18 unit tests passing, zero TODOs/FIXMEs in code.
-- ❌ No persistent agent memory, no inter-agent dialogue, no live streaming wired, no provider routing, no eval, no exports, no share links.
-- The 11-item "5x" roadmap above is the next body of work.
+All 11 items of the "5x" roadmap are **shipped on branch `feat/5x-mirofish-phase1`**:
+
+- ✅ Phase 1.1 — `agent_memories` + `graph_events` + 3 more new tables, native vector memory (`server/embeddings.ts`, `server/memory.ts`)
+- ✅ Phase 1.2 — Memory-aware multi-agent loop (`server/simulation-runner.ts`)
+- ✅ Phase 1.3 — Socket.IO live streaming (server emits `log` / `status` / `graph:event` / `collab:presence`; SimulationMonitor subscribed)
+- ✅ Phase 1.4 — Dynamic graph enrichment (agent decisions can spawn nodes/edges)
+- ✅ Phase 2.5 — Multi-LLM router with latest models (Claude Opus 4.7 / Sonnet 4.6 / Haiku 4.5, Gemini 2.5 Pro/Flash, GPT-5/4.1) — `server/llm-router.ts`
+- ✅ Phase 2.6 — Counterfactual branches: `branches.create` / `.list` / `.compare`
+- ✅ Phase 2.7 — Prediction extraction post-report (`server/predictions.ts`) with confidence + bands + horizon
+- ✅ Phase 2.8 — Calibration: admin `predictions.resolve` + Brier scoring + `predictions.calibration` reliability bins
+- ✅ Phase 2.9 — `reports.exportPdf` / `.exportPptx` (`server/report-export.ts`, deps: pdf-lib + pptxgenjs)
+- ✅ Phase 2.10 — Share links (`share.*` tRPC) + public REST (`server/public-api.ts`: `/api/public/share/:slug{,/report.pdf,/report.pptx}`)
+- ✅ Phase 2.11 — Collab presence hook (`client/src/hooks/useCollabPresence.ts`); ready to drop into Wizard / GraphExplorer.
+
+Remaining UI work (frontend pages haven't been added for the new endpoints yet):
+- Branches dashboard / comparison UI
+- Predictions list + admin resolution UI
+- Share-link manager modal
+- Public `/share/:slug` viewer page
+- Presence avatars rendered on Wizard
+
+All 18 unit tests pass; `pnpm check` clean.
