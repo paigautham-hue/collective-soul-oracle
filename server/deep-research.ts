@@ -89,11 +89,10 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
   const model = modelFor(args.variant);
   const url = `${BASE}/models/${model}:generateContent?key=${ENV.geminiDeepResearchKey}`;
 
-  // Construct the request body. Google's deep-research API accepts both
-  // a normal `contents` array AND an extension `researchPlan` per the
-  // launch notes. We pack the plan into a structured user instruction
-  // so the call works against either the dedicated endpoint OR the
-  // standard generateContent endpoint as a graceful fallback.
+  // Pack the structured plan into the user message text. The standard
+  // generateContent endpoint rejects unknown top-level fields (researchPlan,
+  // enableVisualizations) with HTTP 400, so we keep the body strictly conformant
+  // and rely on the model to follow the embedded plan + JSON output instructions.
   const planBlock = args.plan ? buildPlanBlock(args.plan) : "";
   const userText = planBlock ? `${planBlock}\n\nREQUEST:\n${args.prompt}` : args.prompt;
   const body: Record<string, unknown> = {
@@ -102,9 +101,6 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
       maxOutputTokens: args.variant === "max" ? 16384 : 8192,
       temperature: 0.4,
     },
-    // Note: researchPlan and enableVisualizations are NOT valid fields in the
-    // standard Gemini generateContent API — they caused 400 errors. The plan
-    // is already embedded as structured text in userText via buildPlanBlock().
   };
   if (args.systemInstruction) {
     body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
