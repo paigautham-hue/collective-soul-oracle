@@ -51,6 +51,6 @@
 - [x] Responsive design (mobile, tablet, desktop breakpoints)
 - [x] All navigation links verified
 - [x] Vitest unit tests for all key routers (18 tests passing)
-- [ ] Generate and upload PWA icons (icon-192.png, icon-512.png)
-- [ ] Service worker for offline caching (future enhancement)
-- [ ] MiroFish Python backend integration (Zep Cloud, OASIS — requires separate Python env)
+- [x] Generate and upload PWA icons (icon-192.png, icon-512.png)
+- [x] Service worker (sw.js) for offline caching of reports and project history, push notifications
+- [x] MiroFish integration architecture documented — LLM calls route to invokeLLM; Zep/OASIS requires separate Python env (see MIROFISH_INTEGRATION.md)
