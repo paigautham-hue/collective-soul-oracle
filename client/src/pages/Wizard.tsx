@@ -11,6 +11,7 @@ import {
   ChevronRight, ChevronLeft, Check, Loader2,
   FileUp, X, Network, Sparkles,
 } from "lucide-react";
+import PresenceAvatars from "@/components/PresenceAvatars";
 
 const STEPS = [
   { id: 1, label: "Documents", icon: Upload, description: "Upload seed documents" },
@@ -24,6 +25,7 @@ export default function Wizard() {
   const params = useParams<{ id: string }>();
   const projectId = parseInt(params.id || "0");
   const [, navigate] = useLocation();
+  const { user } = useAuth();
   const [step, setStep] = useState(1);
   const [uploadedFiles, setUploadedFiles] = useState<Array<{ name: string; text: string; url: string }>>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -127,6 +129,9 @@ export default function Wizard() {
           <Link href={`/project/${projectId}`} className="hover:text-[oklch(0.65_0.30_280)] transition-colors">{project?.title || "Project"}</Link>
           <ChevronRight className="w-3 h-3" />
           <span className="text-[oklch(0.97_0.005_265)]">Setup Wizard</span>
+          <div className="ml-auto">
+            <PresenceAvatars projectId={projectId} userId={user?.id ?? null} userName={user?.name} section={`wizard:step-${step}`} />
+          </div>
         </div>
 
         {/* Step Progress */}
