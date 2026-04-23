@@ -193,6 +193,7 @@ export default function Wizard() {
                 </div>
 
                 <ResearchSeedBox projectId={projectId} topic={project?.topic ?? project?.title ?? ""} onSeeded={() => { refetchProject(); setStep(3); }} />
+                <LiveDiscourseBox projectId={projectId} topic={project?.topic ?? project?.title ?? ""} onIngested={() => refetchProject()} />
 
                 {/* Drop Zone */}
                 <div
@@ -539,6 +540,92 @@ function ResearchSeedBox({ projectId, topic, onSeeded }: { projectId: number; to
             >
               {seedMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
               Run research seed
+            </Button>
+            <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LiveDiscourseBox({ projectId, topic, onIngested }: { projectId: number; topic: string; onIngested: () => void }) {
+  const { data: apifyStatus } = trpc.apify.status.useQuery();
+  const [open, setOpen] = useState(false);
+  const [source, setSource] = useState<"twitter" | "reddit" | "web">("web");
+  const [query, setQuery] = useState(topic);
+  const [limit, setLimit] = useState(15);
+
+  const ingestMutation = trpc.apify.ingestAsDocument.useMutation({
+    onSuccess: (r) => {
+      toast.success(`Pulled ${r.count} ${source} posts → saved as ${r.filename}`);
+      onIngested();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  if (!apifyStatus?.configured) {
+    return (
+      <div className="mb-6 p-3 rounded-xl border text-xs" style={{ background: "oklch(0.10 0.02 265 / 0.5)", borderColor: "oklch(0.25 0.05 265 / 0.5)", color: "oklch(0.55 0.02 265)" }}>
+        Tip: set <code>APIFY_API_TOKEN</code> in Manus to pull live discourse from X / Reddit / web instead of (or in addition to) uploading docs.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6 p-4 rounded-xl border" style={{ background: "oklch(0.55 0.20 200 / 0.05)", borderColor: "oklch(0.55 0.20 200 / 0.40)" }}>
+      {!open ? (
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium" style={{ color: "oklch(0.65 0.20 200)" }}>↗ Pull live discourse via Apify</div>
+            <div className="text-xs mt-0.5" style={{ color: "oklch(0.65 0.02 265)" }}>
+              Scrape X / Reddit / web and save as a project document for graph build
+            </div>
+          </div>
+          <Button variant="ghost" onClick={() => setOpen(true)}>Configure</Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            {(["web", "twitter", "reddit"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setSource(s)}
+                className="px-2 py-1.5 rounded border text-xs uppercase tracking-wider"
+                style={{
+                  background: source === s ? "oklch(0.55 0.20 200 / 0.20)" : "transparent",
+                  borderColor: source === s ? "oklch(0.55 0.20 200)" : "oklch(0.25 0.05 265 / 0.5)",
+                  color: source === s ? "oklch(0.65 0.20 200)" : "oklch(0.65 0.02 265)",
+                }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search query / hashtag / subreddit"
+              className="flex-1 bg-transparent border rounded px-3 py-2 text-sm"
+              style={{ borderColor: "oklch(0.25 0.05 265)" }}
+            />
+            <input
+              type="number" min={1} max={50}
+              value={limit}
+              onChange={(e) => setLimit(parseInt(e.target.value || "15"))}
+              className="w-20 bg-transparent border rounded px-3 py-2 text-sm"
+              style={{ borderColor: "oklch(0.25 0.05 265)" }}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              onClick={() => ingestMutation.mutate({ projectId, source, query, limit })}
+              disabled={!query.trim() || ingestMutation.isPending}
+            >
+              {ingestMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Pull & save
             </Button>
             <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
           </div>

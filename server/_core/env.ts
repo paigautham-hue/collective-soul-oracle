@@ -27,4 +27,7 @@ export const ENV = {
   deepResearchMaxModel: process.env.DEEP_RESEARCH_MAX_MODEL ?? "deep-research-max-preview-04-2026",
   // Per-user monthly quota for deep-research calls (each call ~$1-10).
   deepResearchMonthlyQuota: Number(process.env.DEEP_RESEARCH_MONTHLY_QUOTA ?? 25),
+  // Apify (https://apify.com) — used for live discourse ingest (X, Reddit, web).
+  // When absent, related features (pull_recent_posts tool, Wizard "live discourse" option) are hidden.
+  apifyApiToken: process.env.APIFY_API_TOKEN ?? "",
 };

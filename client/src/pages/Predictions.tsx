@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Target, ChevronRight, CheckCircle2, AlertCircle, BarChart3 } from "lucide-react";
+import { Target, ChevronRight, CheckCircle2, AlertCircle, BarChart3, Link as LinkIcon, RefreshCw, ExternalLink, Loader2 } from "lucide-react";
 
 function ConfidencePill({ value }: { value: number }) {
   const pct = Math.round(value * 100);
@@ -43,6 +43,18 @@ export default function Predictions() {
     onError: (err) => toast.error(err.message),
   });
 
+  const [linkingId, setLinkingId] = useState<number | null>(null);
+  const [polySearchQuery, setPolySearchQuery] = useState("");
+  const polySearch = trpc.polymarket.search.useQuery({ query: polySearchQuery, limit: 8 }, { enabled: polySearchQuery.length >= 3 });
+  const linkMutation = trpc.polymarket.linkPrediction.useMutation({
+    onSuccess: () => { toast.success("Linked to Polymarket"); refetch(); setLinkingId(null); setPolySearchQuery(""); },
+    onError: (err) => toast.error(err.message),
+  });
+  const refreshMutation = trpc.polymarket.refreshLinkedForProject.useMutation({
+    onSuccess: (d) => { toast.success(`Refreshed ${d.updated} markets · ${d.resolved} auto-resolved`); refetch(); },
+    onError: (err) => toast.error(err.message),
+  });
+
   return (
     <div className="min-h-screen text-white" style={{ background: "oklch(0.05 0.01 265)" }}>
       <TopNav />
@@ -55,12 +67,25 @@ export default function Predictions() {
           <span className="text-white">Predictions & calibration</span>
         </div>
 
-        <h1 className="text-3xl font-light flex items-center gap-3 mb-2">
-          <Target className="w-8 h-8" style={{ color: "oklch(0.72 0.18 145)" }} />
-          Predictions
-        </h1>
+        <div className="flex items-start justify-between mb-2">
+          <h1 className="text-3xl font-light flex items-center gap-3">
+            <Target className="w-8 h-8" style={{ color: "oklch(0.72 0.18 145)" }} />
+            Predictions
+          </h1>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => refreshMutation.mutate({ projectId, autoResolve: true })}
+            disabled={refreshMutation.isPending}
+            className="border border-[oklch(0.25_0.05_265)]"
+            title="Refresh Polymarket benchmarks and auto-resolve any closed markets"
+          >
+            {refreshMutation.isPending ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 mr-1.5" />}
+            Refresh markets
+          </Button>
+        </div>
         <p className="text-sm mb-8" style={{ color: "oklch(0.55 0.02 265)" }}>
-          Calibrated forecasts extracted from generated reports. {isAdmin ? "Resolve outcomes to score the model." : "Only admins can resolve outcomes."}
+          Calibrated forecasts extracted from generated reports. {isAdmin ? "Resolve outcomes to score the model." : "Only admins can resolve outcomes."} Link a Polymarket market to any prediction for a free benchmark.
         </p>
 
         {calibration && calibration.total > 0 && (
@@ -104,12 +129,32 @@ export default function Predictions() {
                       <ConfidencePill value={p.confidence} />
                     </div>
                     <p className="text-sm mt-1" style={{ color: "oklch(0.75 0.02 265)" }}>{p.predictedOutcome}</p>
-                    <div className="flex gap-4 text-xs mt-2" style={{ color: "oklch(0.55 0.02 265)" }}>
+                    <div className="flex gap-4 text-xs mt-2 flex-wrap" style={{ color: "oklch(0.55 0.02 265)" }}>
                       {p.confidenceBandLow !== null && p.confidenceBandHigh !== null && (
                         <span>80% CI: {Math.round((p.confidenceBandLow ?? 0) * 100)}–{Math.round((p.confidenceBandHigh ?? 0) * 100)}%</span>
                       )}
                       {p.horizonDays && <span>Horizon: {p.horizonDays}d</span>}
                       {p.resolvedAt && p.brierScore !== null && <span>Brier: {p.brierScore.toFixed(3)}</span>}
+                      {p.externalSource === "polymarket" && p.externalRef && (
+                        <a href={`https://polymarket.com/event/${p.externalRef}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline" style={{ color: "oklch(0.72 0.18 145)" }}>
+                          Polymarket: {p.externalProbability !== null ? `${Math.round((p.externalProbability ?? 0) * 100)}%` : "—"}
+                          {p.externalProbability !== null && (
+                            <span className="ml-1" style={{ color: Math.abs((p.confidence ?? 0) - (p.externalProbability ?? 0)) > 0.2 ? "oklch(0.65 0.20 25)" : "oklch(0.55 0.02 265)" }}>
+                              (Δ {((p.confidence ?? 0) - (p.externalProbability ?? 0) >= 0 ? "+" : "")}{Math.round(((p.confidence ?? 0) - (p.externalProbability ?? 0)) * 100)}pp)
+                            </span>
+                          )}
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      )}
+                      {!p.externalSource && (
+                        <button
+                          onClick={() => { setLinkingId(p.id === linkingId ? null : p.id); setPolySearchQuery(p.claim.slice(0, 80)); }}
+                          className="inline-flex items-center gap-1 hover:underline"
+                          style={{ color: "oklch(0.72 0.18 145)" }}
+                        >
+                          <LinkIcon className="w-2.5 h-2.5" /> Link Polymarket
+                        </button>
+                      )}
                     </div>
                     {p.groundTruth && (
                       <div className="mt-2 text-xs px-3 py-1.5 rounded" style={{ background: "oklch(0.06 0.02 265)", color: "oklch(0.80 0.02 265)" }}>
@@ -124,6 +169,44 @@ export default function Predictions() {
                     </Button>
                   )}
                 </div>
+
+                {linkingId === p.id && (
+                  <div className="mt-3 pt-3 border-t" style={{ borderColor: "oklch(0.20 0.05 265)" }}>
+                    <div className="flex gap-2 mb-2">
+                      <input
+                        autoFocus
+                        value={polySearchQuery}
+                        onChange={(e) => setPolySearchQuery(e.target.value)}
+                        placeholder="Search Polymarket markets..."
+                        className="flex-1 bg-transparent border rounded px-3 py-1.5 text-sm"
+                        style={{ borderColor: "oklch(0.25 0.05 265)" }}
+                      />
+                      <Button size="sm" variant="ghost" onClick={() => setLinkingId(null)}>Cancel</Button>
+                    </div>
+                    <div className="space-y-1 max-h-60 overflow-y-auto">
+                      {polySearch.isLoading && <p className="text-xs" style={{ color: "oklch(0.55 0.02 265)" }}>Searching…</p>}
+                      {polySearch.data?.map((m) => (
+                        <button
+                          key={m.slug}
+                          onClick={() => linkMutation.mutate({ predictionId: p.id, slug: m.slug })}
+                          disabled={linkMutation.isPending}
+                          className="w-full text-left p-2 rounded border hover:bg-[oklch(0.10_0.02_265)] text-xs"
+                          style={{ borderColor: "oklch(0.20 0.05 265 / 0.5)" }}
+                        >
+                          <div className="font-medium">{m.question}</div>
+                          <div style={{ color: "oklch(0.55 0.02 265)" }}>
+                            slug={m.slug}
+                            {m.outcomePrices?.[0] !== undefined && <> · YES {Math.round(m.outcomePrices[0] * 100)}%</>}
+                            {m.volumeNum && <> · vol ${Math.round(m.volumeNum).toLocaleString()}</>}
+                          </div>
+                        </button>
+                      ))}
+                      {polySearch.data && polySearch.data.length === 0 && polySearchQuery.length >= 3 && (
+                        <p className="text-xs" style={{ color: "oklch(0.55 0.02 265)" }}>No matching markets.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {isAdmin && resolvingId === p.id && (
                   <div className="mt-4 pt-4 border-t grid gap-3" style={{ borderColor: "oklch(0.20 0.05 265)" }}>

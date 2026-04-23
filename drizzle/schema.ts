@@ -284,6 +284,11 @@ export const predictions = mysqlTable("predictions", {
   groundTruthSource: text("groundTruthSource"),
   brierScore: float("brierScore"),
   resolvedAt: timestamp("resolvedAt"),
+  // External market benchmark (Polymarket / Kalshi / etc.) for calibration context.
+  externalSource: varchar("externalSource", { length: 64 }),       // 'polymarket', 'kalshi', 'manifold'
+  externalRef: varchar("externalRef", { length: 255 }),            // slug / market id
+  externalProbability: float("externalProbability"),               // 0..1 implied prob at last check
+  externalLastCheckedAt: timestamp("externalLastCheckedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -321,8 +326,8 @@ export const watchlistItems = mysqlTable("watchlist_items", {
   id: int("id").autoincrement().primaryKey(),
   projectId: int("projectId").notNull(),
   userId: int("userId").notNull(),
-  symbol: varchar("symbol", { length: 32 }).notNull(),         // 'AAPL', 'NVDA', 'BTC-USD', 'CL=F' (oil futures)
-  assetClass: mysqlEnum("assetClass", ["equity", "crypto", "commodity", "forex", "index", "rate"]).default("equity").notNull(),
+  symbol: varchar("symbol", { length: 128 }).notNull(),        // 'AAPL', 'NVDA', 'BTC-USD', 'CL=F', or polymarket slug
+  assetClass: mysqlEnum("assetClass", ["equity", "crypto", "commodity", "forex", "index", "rate", "prediction_market"]).default("equity").notNull(),
   thesis: text("thesis"),                                       // your reason for tracking
   positionSide: mysqlEnum("positionSide", ["long", "short", "watch"]).default("watch"),
   ingestSources: json("ingestSources").$type<string[]>(),      // ['polygon-news', 'sec-edgar', 'reddit-wsb']

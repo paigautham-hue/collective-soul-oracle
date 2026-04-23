@@ -4,7 +4,7 @@
 
 import { ENV } from "./_core/env";
 
-export type ToolName = "calc" | "current_date" | "lookup_ticker" | "web_search" | "convert_unit";
+export type ToolName = "calc" | "current_date" | "lookup_ticker" | "web_search" | "convert_unit" | "lookup_polymarket" | "pull_recent_posts";
 
 export interface ToolCall {
   tool: ToolName;
@@ -105,6 +105,50 @@ function findUnitFamily(unit: string): string | null {
   return null;
 }
 
+async function execLookupPolymarket(arg: string): Promise<ToolResult> {
+  if (!arg || typeof arg !== "string") {
+    return { tool: "lookup_polymarket", ok: false, output: "lookup_polymarket: provide a slug or query" };
+  }
+  try {
+    const { getYesProbability, searchMarkets } = await import("./polymarket");
+    // If it looks like a slug (no spaces, lowercase-with-dashes), fetch directly.
+    if (/^[a-z0-9-]{4,}$/i.test(arg)) {
+      const { prob, market } = await getYesProbability(arg);
+      if (!market) return { tool: "lookup_polymarket", ok: false, output: `no market found for slug "${arg}"` };
+      const liq = market.liquidityNum ? ` liq=$${Math.round(market.liquidityNum)}` : "";
+      return { tool: "lookup_polymarket", ok: true, output: `${market.question} — Yes implied prob ${prob !== null ? (prob * 100).toFixed(1) + "%" : "n/a"}${liq} (${market.url})` };
+    }
+    // Otherwise treat as search query
+    const results = await searchMarkets(arg, 5);
+    if (results.length === 0) return { tool: "lookup_polymarket", ok: false, output: `no markets matching "${arg}"` };
+    return { tool: "lookup_polymarket", ok: true, output: results.map((m, i) => `${i + 1}. ${m.question} — slug=${m.slug}` + (m.outcomePrices?.[0] !== undefined ? ` yes=${(m.outcomePrices[0] * 100).toFixed(0)}%` : "")).join("\n") };
+  } catch (err) {
+    return { tool: "lookup_polymarket", ok: false, output: `lookup_polymarket error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function execPullRecentPosts(args: { source?: string; query?: string; limit?: number }): Promise<ToolResult> {
+  try {
+    const { pullRecentPosts, isApifyConfigured } = await import("./apify-ingest");
+    if (!isApifyConfigured()) {
+      return { tool: "pull_recent_posts", ok: false, output: "pull_recent_posts: APIFY_API_TOKEN not configured" };
+    }
+    const source = String(args.source ?? "web").toLowerCase();
+    const query = String(args.query ?? "");
+    const limit = Math.min(20, Math.max(1, Number(args.limit ?? 10)));
+    if (!query) return { tool: "pull_recent_posts", ok: false, output: "pull_recent_posts: 'query' required" };
+    const posts = await pullRecentPosts({ source: source as "twitter" | "reddit" | "web", query, limit });
+    if (posts.length === 0) return { tool: "pull_recent_posts", ok: true, output: `no recent ${source} posts for "${query}"` };
+    return {
+      tool: "pull_recent_posts",
+      ok: true,
+      output: posts.map((p, i) => `${i + 1}. ${p.author ? `@${p.author}: ` : ""}${(p.text ?? "").slice(0, 280)}${p.url ? ` (${p.url})` : ""}`).join("\n"),
+    };
+  } catch (err) {
+    return { tool: "pull_recent_posts", ok: false, output: `pull_recent_posts error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 function execConvertUnit(value: number, from: string, to: string): ToolResult {
   if (typeof value !== "number" || !isFinite(value)) {
     return { tool: "convert_unit", ok: false, output: "convert_unit: invalid value" };
@@ -144,24 +188,36 @@ export async function executeTool(call: ToolCall): Promise<ToolResult> {
       return execWebSearch(String(call.args.query ?? ""));
     case "convert_unit":
       return execConvertUnit(Number(call.args.value), String(call.args.from ?? ""), String(call.args.to ?? ""));
+    case "lookup_polymarket":
+      return execLookupPolymarket(String(call.args.slug ?? call.args.query ?? ""));
+    case "pull_recent_posts":
+      return execPullRecentPosts(call.args as { source?: string; query?: string; limit?: number });
     default:
       return { tool: call.tool, ok: false, output: `unknown tool: ${call.tool}` };
   }
 }
 
 export function toolsAvailableFor(projectType: "narrative" | "technical" | "finance"): ToolName[] {
-  // Narrative: keep agents focused on discourse, no tools.
+  // Narrative: discourse-aware tools (live posts), no math.
   // Technical: math + units + (optional) web search.
-  // Finance: ticker + math + web search.
+  // Finance: ticker + polymarket benchmark + math + (optional) web search + (optional) live posts.
+  const apifyOn = Boolean(process.env.APIFY_API_TOKEN);
   if (projectType === "technical") {
-    return ENV.webSearchApiKey ? ["calc", "convert_unit", "current_date", "web_search"] : ["calc", "convert_unit", "current_date"];
-  }
-  if (projectType === "finance") {
-    const list: ToolName[] = ["calc", "current_date", "lookup_ticker"];
+    const list: ToolName[] = ["calc", "convert_unit", "current_date"];
     if (ENV.webSearchApiKey) list.push("web_search");
+    if (apifyOn) list.push("pull_recent_posts");
     return list;
   }
-  return [];
+  if (projectType === "finance") {
+    const list: ToolName[] = ["calc", "current_date", "lookup_ticker", "lookup_polymarket"];
+    if (ENV.webSearchApiKey) list.push("web_search");
+    if (apifyOn) list.push("pull_recent_posts");
+    return list;
+  }
+  // narrative
+  const list: ToolName[] = ["current_date", "lookup_polymarket"];
+  if (apifyOn) list.push("pull_recent_posts");
+  return list;
 }
 
 export function describeToolsForPrompt(tools: ToolName[]): string {
@@ -172,6 +228,8 @@ export function describeToolsForPrompt(tools: ToolName[]): string {
     lookup_ticker: `lookup_ticker({ "symbol": "AAPL" }) — returns prev-day OHLCV from Polygon/Finnhub`,
     web_search: `web_search({ "query": "<search>" }) — returns top 5 results with snippets`,
     convert_unit: `convert_unit({ "value": <num>, "from": "<unit>", "to": "<unit>" }) — converts length/mass/temperature`,
+    lookup_polymarket: `lookup_polymarket({ "slug": "<polymarket-slug>" } or { "query": "<search>" }) — returns market-implied probability and metadata`,
+    pull_recent_posts: `pull_recent_posts({ "source": "twitter|reddit|web", "query": "<search>", "limit": <n> }) — scrapes the most recent N posts/results matching the query via Apify`,
   };
   return [
     "TOOLS — you may include a single \"toolCall\" in your decision JSON if helpful:",
