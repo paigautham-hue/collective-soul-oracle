@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Network, Activity, FileText, MessageSquare,
   Play, ChevronRight, Brain, Zap, Globe, Users, Clock,
-  Layers, BarChart3, Wand2, GitBranch, Target,
+  Layers, BarChart3, Wand2, GitBranch, Target, Loader2,
 } from "lucide-react";
 
 function StatusBadge({ status }: { status: string }) {
@@ -82,6 +82,8 @@ export default function ProjectDetail() {
 
   const latestSim = simulations?.[0];
   const canRunSim = project.envReady || project.status === "ready" || project.status === "completed";
+  const simIsLive = latestSim?.status === "running" || latestSim?.status === "pending";
+  const canStartNew = canRunSim && !simIsLive;
   const canGenerateReport = simulations && simulations.length > 0;
 
   const actions = [
@@ -103,12 +105,20 @@ export default function ProjectDetail() {
     },
     {
       icon: Activity,
-      label: "Run Simulation",
-      description: canRunSim ? "Launch multi-agent simulation" : "Complete setup first",
-      href: latestSim ? `/project/${projectId}/simulation/${latestSim.id}` : "#",
+      label: simIsLive ? "Monitor Live Simulation" : latestSim ? "Run Simulation Again" : "Run Simulation",
+      description: !canRunSim
+        ? "Complete setup first"
+        : simIsLive
+          ? "A simulation is currently running"
+          : latestSim
+            ? `Last run: ${latestSim.status}. Click to start a fresh run with current agents & memory.`
+            : "Launch multi-agent simulation",
+      href: simIsLive && latestSim ? `/project/${projectId}/simulation/${latestSim.id}` : "#",
       color: "oklch(0.72_0.18_145)",
       available: canRunSim,
-      action: canRunSim && !latestSim ? () => startSimMutation.mutate({ projectId, totalRounds: project.roundCount || 5, platform: project.platform || "both" }) : undefined,
+      action: canStartNew
+        ? () => startSimMutation.mutate({ projectId, totalRounds: project.roundCount || 5, platform: project.platform || "both" })
+        : undefined,
     },
     {
       icon: FileText,
@@ -257,9 +267,23 @@ export default function ProjectDetail() {
             transition={{ delay: 0.4 }}
             className="glass-card p-6"
           >
-            <h2 className="font-cinzel text-sm font-semibold tracking-wider text-[oklch(0.65_0.30_280)] mb-4">
-              SIMULATION HISTORY
-            </h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-cinzel text-sm font-semibold tracking-wider text-[oklch(0.65_0.30_280)]">
+                SIMULATION HISTORY
+              </h2>
+              {canStartNew && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={startSimMutation.isPending}
+                  onClick={() => startSimMutation.mutate({ projectId, totalRounds: project.roundCount || 5, platform: project.platform || "both" })}
+                  className="font-cormorant text-xs border border-[oklch(0.25_0.05_265)]"
+                >
+                  {startSimMutation.isPending ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Play className="w-3 h-3 mr-1" />}
+                  Run again
+                </Button>
+              )}
+            </div>
             <div className="space-y-3">
               {simulations.slice(0, 5).map((sim) => (
                 <Link key={sim.id} href={`/project/${projectId}/simulation/${sim.id}`}>
