@@ -31,8 +31,8 @@ import {
   getChatMessages,
   getAllUsers,
 } from "./db";
-import { invokeLLM } from "./_core/llm";
 import { notifyOwner } from "./_core/notification";
+import { completeText, type LLMTask } from "./llm-router";
 
 // ─── Admin Procedure ──────────────────────────────────────────────────────────
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -42,17 +42,18 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
-// ─── LLM Router (server-side only) ───────────────────────────────────────────
-async function routeLLM(task: "graph_extraction" | "persona_generation" | "report_generation" | "chat", prompt: string, systemPrompt?: string) {
-  const messages: { role: "system" | "user"; content: string }[] = [];
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  messages.push({ role: "user", content: prompt });
-
+// ─── LLM Router (legacy shim → new task-routed multi-LLM client) ─────────────
+// Maps the legacy 4-task signature onto the new LLMTask vocabulary so existing
+// call sites keep working while we benefit from per-task model selection
+// (Claude Opus 4.7 / Sonnet 4.6 / Haiku 4.5, Gemini 2.5, GPT-5) when keys are set.
+async function routeLLM(
+  task: "graph_extraction" | "persona_generation" | "report_generation" | "chat",
+  prompt: string,
+  systemPrompt?: string,
+): Promise<string> {
+  const mapped: LLMTask = task === "chat" ? "agent_chat" : task;
   try {
-    const response = await invokeLLM({ messages });
-    const content = response?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Empty LLM response");
-    return content as string;
+    return await completeText(mapped, prompt, systemPrompt);
   } catch (err) {
     console.error(`[LLM] ${task} failed:`, err);
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "LLM generation failed" });
@@ -313,14 +314,16 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
           systemPrompt = `You are the Oracle Report Agent, an expert AI analyst specializing in multi-agent social simulations.\nYou have deep knowledge of the simulation project: ${project.title ?? "this project"}.\nTopic: ${project.topic ?? project.title ?? "this topic"}.\nThere are ${agentsList.length} agents in this simulation.\nProvide insightful, analytical responses about simulation results, trends, agent behaviors, and predictions. Be precise and scholarly.`;
         }
         const historyMessages = input.history.map((h: any) => ({ role: h.role as "user" | "assistant", content: h.content as string }));
-        const llmMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
-          { role: "system", content: systemPrompt },
-          ...historyMessages,
-          { role: "user", content: input.message },
-        ];
-        const llmResponse = await invokeLLM({ messages: llmMessages });
-        const rawReply = llmResponse?.choices?.[0]?.message?.content;
-        const reply: string = typeof rawReply === "string" ? rawReply : "I cannot respond at this time.";
+        const { complete } = await import("./llm-router");
+        const llmResult = await complete({
+          task: "agent_chat",
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...historyMessages,
+            { role: "user", content: input.message },
+          ],
+        });
+        const reply: string = llmResult.text || "I cannot respond at this time.";
         await addChatMessage({ projectId: input.projectId, userId: ctx.user.id, agentId: input.agentId !== undefined ? String(input.agentId) : undefined, role: "user", content: input.message });
         await addChatMessage({ projectId: input.projectId, userId: ctx.user.id, agentId: input.agentId !== undefined ? String(input.agentId) : undefined, role: "assistant", content: `[${agentName}] ${reply}` });
         return { response: reply, agentName };

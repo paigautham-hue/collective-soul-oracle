@@ -203,3 +203,102 @@ export const chatMessages = mysqlTable("chat_messages", {
 
 export type ChatMessage = typeof chatMessages.$inferSelect;
 export type InsertChatMessage = typeof chatMessages.$inferInsert;
+
+// ─── Agent Memories ──────────────────────────────────────────────────────────
+// Vector memory layer. `embedding` is a JSON-encoded float[] (length = model dim,
+// e.g. 1536 for OpenAI text-embedding-3-small). Cosine similarity computed in JS
+// at retrieval time. `salience` decays over rounds; consolidation prunes low-salience.
+export const agentMemories = mysqlTable("agent_memories", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  agentId: varchar("agentId", { length: 255 }).notNull(),
+  simulationRunId: int("simulationRunId"),
+  round: int("round").default(0),
+  kind: mysqlEnum("kind", ["observation", "action", "reflection", "fact"]).default("observation").notNull(),
+  content: text("content").notNull(),
+  embedding: json("embedding").$type<number[]>(),
+  salience: float("salience").default(1.0).notNull(),
+  decayedAt: timestamp("decayedAt"),
+  metadata: json("metadata"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type AgentMemory = typeof agentMemories.$inferSelect;
+export type InsertAgentMemory = typeof agentMemories.$inferInsert;
+
+// ─── Graph Events ────────────────────────────────────────────────────────────
+// Records when simulation activity creates/modifies graph nodes & edges so the
+// knowledge graph evolves alongside the simulation.
+export const graphEvents = mysqlTable("graph_events", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  simulationRunId: int("simulationRunId"),
+  round: int("round").default(0),
+  eventType: mysqlEnum("eventType", ["node_added", "node_updated", "edge_added", "edge_strengthened", "edge_weakened"]).notNull(),
+  refNodeId: varchar("refNodeId", { length: 255 }),
+  refEdgeFrom: varchar("refEdgeFrom", { length: 255 }),
+  refEdgeTo: varchar("refEdgeTo", { length: 255 }),
+  delta: json("delta"),
+  reason: text("reason"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type GraphEvent = typeof graphEvents.$inferSelect;
+export type InsertGraphEvent = typeof graphEvents.$inferInsert;
+
+// ─── Simulation Branches (Phase 2: counterfactuals) ──────────────────────────
+// A branch is a parallel sim variant on the same project with a perturbation
+// (e.g. shifted ideology distribution, removed agent, alt topic framing).
+export const simulationBranches = mysqlTable("simulation_branches", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  parentRunId: int("parentRunId"),
+  simulationRunId: int("simulationRunId").notNull(),
+  label: varchar("label", { length: 255 }).notNull(),
+  perturbation: json("perturbation"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type SimulationBranch = typeof simulationBranches.$inferSelect;
+export type InsertSimulationBranch = typeof simulationBranches.$inferInsert;
+
+// ─── Predictions + Calibration (Phase 2: confidence/eval) ────────────────────
+export const predictions = mysqlTable("predictions", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  simulationRunId: int("simulationRunId"),
+  reportId: int("reportId"),
+  claim: text("claim").notNull(),
+  predictedOutcome: text("predictedOutcome").notNull(),
+  confidence: float("confidence").notNull(),
+  confidenceBandLow: float("confidenceBandLow"),
+  confidenceBandHigh: float("confidenceBandHigh"),
+  horizonDays: int("horizonDays"),
+  resolutionDate: timestamp("resolutionDate"),
+  groundTruth: text("groundTruth"),
+  groundTruthSource: text("groundTruthSource"),
+  brierScore: float("brierScore"),
+  resolvedAt: timestamp("resolvedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Prediction = typeof predictions.$inferSelect;
+export type InsertPrediction = typeof predictions.$inferInsert;
+
+// ─── Share Links (Phase 2: public sharing) ───────────────────────────────────
+export const shareLinks = mysqlTable("share_links", {
+  id: int("id").autoincrement().primaryKey(),
+  projectId: int("projectId").notNull(),
+  reportId: int("reportId"),
+  userId: int("userId").notNull(),
+  slug: varchar("slug", { length: 64 }).notNull().unique(),
+  scope: mysqlEnum("scope", ["report", "project_readonly"]).default("report").notNull(),
+  expiresAt: timestamp("expiresAt"),
+  views: int("views").default(0).notNull(),
+  revoked: boolean("revoked").default(false).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type ShareLink = typeof shareLinks.$inferSelect;
+export type InsertShareLink = typeof shareLinks.$inferInsert;

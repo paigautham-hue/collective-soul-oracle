@@ -15,6 +15,13 @@
       "when": 1776927848237,
       "tag": "0001_parallel_bishop",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1776934960403,
+      "tag": "0002_remarkable_vance_astro",
+      "breakpoints": true
     }
   ]
 }
