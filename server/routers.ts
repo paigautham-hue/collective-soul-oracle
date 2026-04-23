@@ -60,6 +60,11 @@ import {
 import { ingestSymbolNews, ingestWatchlist, recentCatalysts, isFinanceConfigured } from "./finance-ingest";
 import { runDeepResearch, isDeepResearchConfigured, checkDeepResearchQuota } from "./deep-research";
 import { getMonthlySummary } from "./usage";
+import { searchMarkets as polySearch, getMarket as polyGet, getYesProbability, getResolution } from "./polymarket";
+import { pullRecentPosts, isApifyConfigured, type Post as ApifyPost } from "./apify-ingest";
+import { getDb } from "./db";
+import { predictions, documents } from "../drizzle/schema";
+import { eq } from "drizzle-orm";
 import { extractPredictions, persistExtractedPredictions, summarizeCalibration, brierBinary } from "./predictions";
 import { renderReportPdf, renderReportPptx } from "./report-export";
 import { storagePut } from "./storage";
@@ -938,6 +943,124 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
   // ─── Usage (deep-research quota etc.) ───────────────────────────────────────
   usage: router({
     thisMonth: protectedProcedure.query(({ ctx }) => getMonthlySummary(ctx.user.id)),
+  }),
+
+  // ─── Apify (live discourse ingest) ──────────────────────────────────────────
+  apify: router({
+    status: publicProcedure.query(() => ({ configured: isApifyConfigured() })),
+
+    // Scrape recent posts; returned to UI for preview.
+    scrape: protectedProcedure
+      .input(z.object({
+        source: z.enum(["twitter", "reddit", "web"]),
+        query: z.string().min(2).max(200),
+        limit: z.number().min(1).max(50).default(15),
+      }))
+      .mutation(({ input }) => pullRecentPosts(input)),
+
+    // Pull recent posts AND save them as a synthesised "document" for the
+    // project, so the existing graph-build pipeline picks them up.
+    ingestAsDocument: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        source: z.enum(["twitter", "reddit", "web"]),
+        query: z.string().min(2).max(200),
+        limit: z.number().min(1).max(50).default(20),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+        const posts: ApifyPost[] = await pullRecentPosts(input);
+        const synthesised = posts
+          .map((p, i) => `--- ${p.source.toUpperCase()} POST ${i + 1} ---\n${p.author ? `@${p.author}\n` : ""}${p.text}\n${p.url ? `Source: ${p.url}` : ""}`)
+          .join("\n\n");
+        const filename = `apify-${input.source}-${input.query.slice(0, 40).replace(/[^a-z0-9]+/gi, "_")}-${Date.now()}.txt`;
+        const db = await getDb();
+        if (db) {
+          await db.insert(documents).values({
+            projectId: input.projectId,
+            userId: ctx.user.id,
+            filename,
+            mimeType: "text/plain",
+            storageKey: `synth/${filename}`,
+            storageUrl: `synthetic://apify/${input.source}/${encodeURIComponent(input.query)}`,
+            sizeBytes: synthesised.length,
+            extractedText: synthesised.slice(0, 50000),
+          });
+        }
+        return { count: posts.length, filename, preview: synthesised.slice(0, 600) };
+      }),
+  }),
+
+  // ─── Polymarket (free public benchmark for predictions) ─────────────────────
+  polymarket: router({
+    search: protectedProcedure
+      .input(z.object({ query: z.string().min(2).max(200), limit: z.number().min(1).max(25).default(10) }))
+      .query(({ input }) => polySearch(input.query, input.limit)),
+
+    get: protectedProcedure
+      .input(z.object({ slug: z.string().min(2).max(255) }))
+      .query(({ input }) => polyGet(input.slug)),
+
+    // Link an existing prediction to a Polymarket market and snapshot the
+    // current implied probability. Stored on the prediction row so the UI
+    // can show the gap (Oracle confidence vs market).
+    linkPrediction: protectedProcedure
+      .input(z.object({ predictionId: z.number(), slug: z.string().min(2) }))
+      .mutation(async ({ input }) => {
+        const { prob, market } = await getYesProbability(input.slug);
+        if (!market) throw new TRPCError({ code: "NOT_FOUND", message: "Polymarket market not found" });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(predictions).set({
+          externalSource: "polymarket",
+          externalRef: input.slug,
+          externalProbability: prob ?? null,
+          externalLastCheckedAt: new Date(),
+        }).where(eq(predictions.id, input.predictionId));
+        return { prob, market };
+      }),
+
+    // Refresh all linked prediction probabilities for a project (cheap — just
+    // a few HTTP calls). Optionally auto-resolves any closed markets.
+    refreshLinkedForProject: protectedProcedure
+      .input(z.object({ projectId: z.number(), autoResolve: z.boolean().default(true) }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const linked = await db.select().from(predictions).where(eq(predictions.projectId, input.projectId));
+        let updated = 0;
+        let resolved = 0;
+        for (const p of linked) {
+          if (p.externalSource !== "polymarket" || !p.externalRef) continue;
+          try {
+            const { prob } = await getYesProbability(p.externalRef);
+            await db.update(predictions).set({
+              externalProbability: prob ?? null,
+              externalLastCheckedAt: new Date(),
+            }).where(eq(predictions.id, p.id));
+            updated += 1;
+
+            if (input.autoResolve && !p.resolvedAt) {
+              const r = await getResolution(p.externalRef);
+              if (r.resolved && typeof r.yes === "boolean") {
+                const occurred = r.yes;
+                const brier = Math.pow((p.confidence ?? 0) - (occurred ? 1 : 0), 2);
+                await db.update(predictions).set({
+                  groundTruth: occurred ? "Yes (Polymarket resolved YES)" : "No (Polymarket resolved NO)",
+                  groundTruthSource: `polymarket:${p.externalRef}`,
+                  brierScore: brier,
+                  resolvedAt: new Date(),
+                }).where(eq(predictions.id, p.id));
+                resolved += 1;
+              }
+            }
+          } catch (err) {
+            console.warn(`[polymarket.refresh] ${p.externalRef} failed:`, err);
+          }
+        }
+        return { updated, resolved };
+      }),
   }),
 
   // ─── Chat ──────────────────────────────────────────────────────────────────
