@@ -8,8 +8,13 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Network, Activity, FileText, MessageSquare,
   Play, ChevronRight, Brain, Zap, Globe, Users, Clock,
-  Layers, BarChart3, Wand2, GitBranch, Target, Loader2,
+  Layers, BarChart3, Wand2, GitBranch, Target, Loader2, Eraser,
 } from "lucide-react";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
@@ -54,6 +59,11 @@ export default function ProjectDetail() {
       toast.success("Report generation started");
       navigate(`/project/${projectId}/report/${report?.id}`);
     },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const resetMemoryMutation = trpc.simulations.resetMemory.useMutation({
+    onSuccess: (d) => toast.success(`Wiped ${d.deleted} memory entr${d.deleted === 1 ? "y" : "ies"} \u2014 next run will be blank-slate`),
     onError: (err) => toast.error(err.message),
   });
 
@@ -271,18 +281,51 @@ export default function ProjectDetail() {
               <h2 className="font-cinzel text-sm font-semibold tracking-wider text-[oklch(0.65_0.30_280)]">
                 SIMULATION HISTORY
               </h2>
-              {canStartNew && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={startSimMutation.isPending}
-                  onClick={() => startSimMutation.mutate({ projectId, totalRounds: project.roundCount || 5, platform: project.platform || "both" })}
-                  className="font-cormorant text-xs border border-[oklch(0.25_0.05_265)]"
-                >
-                  {startSimMutation.isPending ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Play className="w-3 h-3 mr-1" />}
-                  Run again
-                </Button>
-              )}
+              <div className="flex items-center gap-2">
+                {canStartNew && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={startSimMutation.isPending}
+                    onClick={() => startSimMutation.mutate({ projectId, totalRounds: project.roundCount || 5, platform: project.platform || "both" })}
+                    className="font-cormorant text-xs border border-[oklch(0.25_0.05_265)]"
+                  >
+                    {startSimMutation.isPending ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Play className="w-3 h-3 mr-1" />}
+                    Run again
+                  </Button>
+                )}
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={resetMemoryMutation.isPending || simIsLive}
+                      className="font-cormorant text-xs border border-[oklch(0.30_0.15_25_/_0.40)] text-[oklch(0.75_0.18_25)] hover:bg-[oklch(0.30_0.15_25_/_0.10)]"
+                      title={simIsLive ? "Cannot reset while a simulation is running" : "Wipe all agent memories for a blank-slate re-run"}
+                    >
+                      {resetMemoryMutation.isPending ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Eraser className="w-3 h-3 mr-1" />}
+                      Reset memory
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Reset agent memory?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This permanently deletes every observation, action, reflection, and fact your agents have accumulated for this project. The next simulation run will start blank-slate. Past simulation logs and reports are kept untouched.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => resetMemoryMutation.mutate({ projectId })}
+                        className="bg-[oklch(0.55_0.20_25)] hover:bg-[oklch(0.50_0.22_25)]"
+                      >
+                        Wipe memory
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
             <div className="space-y-3">
               {simulations.slice(0, 5).map((sim) => (

@@ -111,3 +111,14 @@ export async function consolidate(projectId: number, threshold = 0.02): Promise<
     .where(and(eq(agentMemories.projectId, projectId), sql`${agentMemories.salience} < ${threshold}`));
   return (result as unknown as { affectedRows?: number }).affectedRows ?? 0;
 }
+
+// Hard reset — wipe ALL memories for a project. Use when the user wants a
+// blank-slate re-run instead of memory-informed continuation.
+export async function wipeProjectMemories(projectId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const result = await db
+    .delete(agentMemories)
+    .where(eq(agentMemories.projectId, projectId));
+  return (result as unknown as { affectedRows?: number }).affectedRows ?? 0;
+}

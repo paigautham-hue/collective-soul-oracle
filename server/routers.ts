@@ -402,6 +402,21 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
     logs: protectedProcedure
       .input(z.object({ simulationRunId: z.number(), limit: z.number().default(100) }))
       .query(({ input }) => getSimulationLogs(input.simulationRunId, input.limit)),
+
+    // Wipe ALL accumulated agent memories for a project (project owner or admin).
+    // Use when you want a true blank-slate re-run, not a memory-informed continuation.
+    resetMemory: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+        if (project.userId !== ctx.user.id && ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only the project owner or an admin can reset memory" });
+        }
+        const { wipeProjectMemories } = await import("./memory");
+        const deleted = await wipeProjectMemories(input.projectId);
+        return { deleted };
+      }),
   }),
 
   // ─── Reports ───────────────────────────────────────────────────────────────
