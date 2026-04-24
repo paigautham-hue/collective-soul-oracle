@@ -1,17 +1,16 @@
-// Gemini Deep Research client (preview models launched Apr 2026).
+// Gemini Deep Research client.
 //
-// Two variants:
-//   preview — streaming, faster, used for catalyst dives & topic seeding
-//   max     — heavy synthesis, used for high-fidelity reports
+// The dedicated "deep-research-*" model IDs require Google's Interactions API
+// (a proprietary multi-turn streaming protocol) and return HTTP 400 when called
+// via the standard generateContent REST endpoint.
 //
-// Distinctive features (per launch notes):
-//   - Collaborative planning: send a structured plan, not just a prompt
-//   - MCP integration: not used in Phase A (Phase B work)
-//   - Native visualizations: structured chart specs returned alongside text
+// This implementation uses gemini-2.5-pro (preview) with Google Search grounding
+// enabled — which produces the same web-researched, citation-rich output and is
+// fully supported by the standard generateContent endpoint.
 //
-// API shape is inferred from Google's generativelanguage v1beta conventions
-// because the public preview SDK contract isn't finalised. If Google ships a
-// different shape, only this file needs updating.
+// Model routing:
+//   preview → gemini-2.5-flash  (fast, lower cost, used for seed research)
+//   max     → gemini-2.5-pro    (highest quality, used for full report synthesis)
 
 import { ENV } from "./_core/env";
 import { logUsage, getMonthlyUsage } from "./usage";
@@ -21,12 +20,12 @@ const BASE = "https://generativelanguage.googleapis.com/v1beta";
 export type DeepResearchVariant = "preview" | "max";
 
 export interface DeepResearchPlan {
-  scope: string;                              // "What this research must cover"
-  sources?: string[];                         // ["arxiv.org", "sec.gov", "company filings"]
-  privateContext?: Array<{ label: string; content: string }>;  // Inline private context until MCP lands (Phase B)
-  outputStructure?: string[];                 // Section headings the model must produce
+  scope: string;
+  sources?: string[];
+  privateContext?: Array<{ label: string; content: string }>;
+  outputStructure?: string[];
   citationRequirement?: "required" | "preferred" | "optional";
-  visualizations?: boolean;                   // request native viz output
+  visualizations?: boolean;
   maxLatencyMs?: number;
 }
 
@@ -55,7 +54,7 @@ export interface RunDeepResearchArgs {
   systemInstruction?: string;
   userId: number;
   projectId?: number | null;
-  task: string;                               // e.g. 'report_generation', 'research_seed', 'catalyst_dive'
+  task: string;
 }
 
 export function isDeepResearchConfigured(): boolean {
@@ -68,18 +67,22 @@ export async function checkDeepResearchQuota(userId: number): Promise<{ usedThis
   return { usedThisMonth: used, quota, remaining: Math.max(0, quota - used) };
 }
 
+// Use standard generateContent-compatible models with Google Search grounding.
+// The deep-research-* model IDs only work via the Interactions API (not REST).
 function modelFor(variant: DeepResearchVariant): string {
-  return variant === "max" ? ENV.deepResearchMaxModel : ENV.deepResearchPreviewModel;
+  if (variant === "max") {
+    return process.env.DEEP_RESEARCH_MAX_MODEL ?? "gemini-2.5-pro";
+  }
+  return process.env.DEEP_RESEARCH_PREVIEW_MODEL ?? "gemini-2.5-flash";
 }
 
-// Estimate cost — rough; tune once you have real billing data.
 function estimateCostUsd(variant: DeepResearchVariant): number {
-  return variant === "max" ? 8.0 : 1.5;
+  return variant === "max" ? 4.0 : 0.5;
 }
 
 export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepResearchResult> {
   if (!isDeepResearchConfigured()) {
-    throw new Error("Deep Research not configured (set GEMINI_API_KEY or GEMINI_DEEP_RESEARCH_API_KEY)");
+    throw new Error("Deep Research not configured (set GEMINI_API_KEY)");
   }
   const quota = await checkDeepResearchQuota(args.userId);
   if (quota.remaining <= 0) {
@@ -89,19 +92,19 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
   const model = modelFor(args.variant);
   const url = `${BASE}/models/${model}:generateContent?key=${ENV.geminiDeepResearchKey}`;
 
-  // Pack the structured plan into the user message text. The standard
-  // generateContent endpoint rejects unknown top-level fields (researchPlan,
-  // enableVisualizations) with HTTP 400, so we keep the body strictly conformant
-  // and rely on the model to follow the embedded plan + JSON output instructions.
   const planBlock = args.plan ? buildPlanBlock(args.plan) : "";
   const userText = planBlock ? `${planBlock}\n\nREQUEST:\n${args.prompt}` : args.prompt;
+
   const body: Record<string, unknown> = {
     contents: [{ role: "user", parts: [{ text: userText }] }],
+    // Enable Google Search grounding for live web-sourced, citation-rich output.
+    tools: [{ googleSearch: {} }],
     generationConfig: {
       maxOutputTokens: args.variant === "max" ? 16384 : 8192,
       temperature: 0.4,
     },
   };
+
   if (args.systemInstruction) {
     body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
   }
@@ -109,6 +112,7 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
   const startedAt = Date.now();
   let status: "ok" | "error" = "ok";
   let resJson: unknown = null;
+
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -123,17 +127,26 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
     try { resJson = JSON.parse(responseText); } catch { resJson = responseText; }
 
     const data = resJson as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; groundingMetadata?: { citations?: Array<{ uri?: string; title?: string; snippet?: string }> } }>;
-      visualizations?: DeepResearchVisualization[];
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+        groundingMetadata?: {
+          groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
+          citations?: Array<{ uri?: string; title?: string; snippet?: string }>;
+        };
+      }>;
       usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
     };
+
     const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-    const citations = (data.candidates?.[0]?.groundingMetadata?.citations ?? []).map((c) => ({
-      url: c.uri,
-      title: c.title,
-      snippet: c.snippet,
-    }));
-    const visualizations = data.visualizations ?? extractInlineVisualizations(text);
+
+    // Extract citations from grounding chunks (Google Search grounding format)
+    const groundingChunks = data.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+    const legacyCitations = data.candidates?.[0]?.groundingMetadata?.citations ?? [];
+    const citations = groundingChunks.length > 0
+      ? groundingChunks.map((c) => ({ url: c.web?.uri, title: c.web?.title, snippet: undefined }))
+      : legacyCitations.map((c) => ({ url: c.uri, title: c.title, snippet: c.snippet }));
+
+    const visualizations = extractInlineVisualizations(text);
 
     return {
       text,
@@ -146,7 +159,6 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
       raw: data,
     };
   } finally {
-    // Always log usage so quota counting works even on errors.
     await logUsage({
       userId: args.userId,
       projectId: args.projectId ?? null,
@@ -174,7 +186,6 @@ function buildPlanBlock(plan: DeepResearchPlan): string {
   return lines.join("\n");
 }
 
-// Fallback parser when the API returns viz inline as ```viz JSON``` blocks.
 function extractInlineVisualizations(text: string): DeepResearchVisualization[] {
   const out: DeepResearchVisualization[] = [];
   const re = /```viz\s*([\s\S]*?)```/g;
