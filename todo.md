@@ -68,3 +68,11 @@
 - [ ] Frontend: Wire PromptEnhancer into Wizard Step 1 topic input field
 - [ ] Frontend: ResearchProgressPanel component with animated SSE thought stream
 - [ ] Frontend: CollaborativePlanReview modal in Wizard Step 1 (createPlan → review → refinePlan → executePlan)
+
+## Phase 10: Document-Grounded Deep Research
+- [ ] Fix: fold system_instruction into input prompt (Interactions API 400 fix)
+- [ ] Backend: extend seedProject to embed uploaded doc text as privateContext in Deep Research
+- [ ] Backend: research.seedFromDocuments procedure — extract themes from docs via LLM, build research plan, run Deep Research with docs as grounding context
+- [ ] Frontend: Wizard Step 1 — "Research with documents" toggle when files are uploaded
+- [ ] Frontend: Wizard Step 1 — "Extract research plan from documents" button
+- [ ] Frontend: ResearchSeedBox — pass uploadedFiles text to backend as privateContext
