@@ -1404,6 +1404,141 @@ Return ONLY a JSON object with this exact shape:
       return { totalUsers: users.length };
     }),
   }),
+
+  // ─── Data Sources ──────────────────────────────────────────────────────────
+  datasources: router({
+    /** Return metadata for all available data sources */
+    list: publicProcedure.query(async () => {
+      const { DATA_SOURCES } = await import("./datasources/index");
+      return DATA_SOURCES;
+    }),
+
+    /** Fetch data from a single source and return extracted text (preview) */
+    search: protectedProcedure
+      .input(
+        z.object({
+          sourceId: z.string(),
+          query: z.string().min(1).max(500),
+          options: z.object({
+            symbol: z.string().optional(),
+            subreddit: z.string().optional(),
+            countryCode: z.string().optional(),
+            language: z.string().optional(),
+          }).optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const { fetchFromSource } = await import("./datasources/index");
+        const result = await fetchFromSource(
+          input.sourceId as Parameters<typeof fetchFromSource>[0],
+          input.query,
+          input.options
+        );
+        return result;
+      }),
+
+    /** Fetch from a source and save as a project document */
+    ingest: protectedProcedure
+      .input(
+        z.object({
+          projectId: z.number(),
+          sourceId: z.string(),
+          query: z.string().min(1).max(500),
+          options: z.object({
+            symbol: z.string().optional(),
+            subreddit: z.string().optional(),
+            countryCode: z.string().optional(),
+            language: z.string().optional(),
+          }).optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        const { fetchFromSource } = await import("./datasources/index");
+        const result = await fetchFromSource(
+          input.sourceId as Parameters<typeof fetchFromSource>[0],
+          input.query,
+          input.options
+        );
+        if (result.error) throw new TRPCError({ code: "BAD_REQUEST", message: result.error });
+        if (!result.extractedText) throw new TRPCError({ code: "NOT_FOUND", message: "No data returned from source" });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+        const fileName = `[${result.source.toUpperCase()}] ${input.query.slice(0, 60)}`;
+        const [inserted] = await db
+          .insert(documents)
+          .values({
+            projectId: input.projectId,
+            userId: ctx.user.id,
+            filename: fileName,
+            mimeType: "text/plain",
+            sizeBytes: result.extractedText.length,
+            storageKey: `datasource/${result.source}/${Date.now()}`,
+            storageUrl: "",
+            extractedText: result.extractedText,
+          })
+          .$returningId();
+        return { docId: inserted?.id, itemCount: result.itemCount, fileName };
+      }),
+
+    /** Use LLM to recommend and rank the most relevant data sources for a given topic + project type */
+    recommend: protectedProcedure
+      .input(
+        z.object({
+          topic: z.string().min(1).max(500),
+          projectType: z.enum(["narrative", "technical", "finance"]).optional(),
+          description: z.string().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const { DATA_SOURCES } = await import("./datasources/index");
+        const sourceList = DATA_SOURCES.map((s: { id: string; name: string; description: string; category: string; tags: string[] }) =>
+          `- id: ${s.id} | name: ${s.name} | category: ${s.category} | tags: ${s.tags.join(", ")} | description: ${s.description}`
+        ).join("\n");
+
+        const prompt = `You are an expert research strategist. A user is building a multi-agent simulation about the following topic:
+
+Topic: ${input.topic}
+Project Type: ${input.projectType ?? "narrative"}
+${input.description ? `Description: ${input.description}` : ""}
+
+Here are the available data sources:
+${sourceList}
+
+Your task: Rank ALL ${DATA_SOURCES.length} sources by relevance to this topic. For each source, provide:
+1. A relevance score from 0-100 (100 = extremely relevant)
+2. A short reason (1 sentence) why it is or isn't relevant
+3. A suggested search query tailored to the topic (for relevant sources)
+
+Return a JSON array sorted by relevance score descending:
+[
+  {
+    "sourceId": "string",
+    "relevanceScore": number,
+    "reason": "string",
+    "suggestedQuery": "string"
+  }
+]
+
+Only return the JSON array, no other text.`;
+
+        let raw: string;
+        try {
+          raw = await completeText("graph_extraction", prompt);
+        } catch {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "LLM recommendation failed" });
+        }
+
+        let recommendations: Array<{ sourceId: string; relevanceScore: number; reason: string; suggestedQuery: string }>;
+        try {
+          const match = raw.match(/\[[\s\S]*\]/);
+          recommendations = JSON.parse(match ? match[0] : raw);
+        } catch {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to parse LLM recommendations" });
+        }
+
+        return recommendations;
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

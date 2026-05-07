@@ -15,6 +15,7 @@ import PresenceAvatars from "@/components/PresenceAvatars";
 import { PromptEnhancer } from "@/components/PromptEnhancer";
 import { ResearchProgressPanel } from "@/components/ResearchProgressPanel";
 import { CollaborativePlanReview } from "@/components/CollaborativePlanReview";
+import { LiveDataSourcesPanel } from "@/components/LiveDataSourcesPanel";
 
 const STEPS = [
   { id: 1, label: "Documents", icon: Upload, description: "Upload seed documents" },
@@ -234,6 +235,14 @@ export default function Wizard() {
 
                 <ResearchSeedBox projectId={projectId} topic={project?.topic ?? project?.title ?? ""} onSeeded={() => { refetchProject(); setStep(3); }} />
                 <LiveDiscourseBox projectId={projectId} topic={project?.topic ?? project?.title ?? ""} onIngested={() => refetchProject()} />
+                <LiveDataSourcesPanel
+                  projectId={projectId}
+                  topic={project?.topic ?? project?.title ?? ""}
+                  projectType={project?.projectType as "narrative" | "technical" | "finance" | undefined}
+                  description={project?.description ?? undefined}
+                  onIngested={() => refetchProject()}
+                />
+
 
                 {/* Drop Zone */}
                 <div

@@ -86,3 +86,39 @@
 - [x] Backend: simulations.deleteRun tRPC procedure to delete a simulation run by id (already existed, upgraded icon to Trash2)
 - [x] Frontend: trash icon button on each simulation run row in ProjectDetail.tsx
 - [x] Frontend: per-file upload progress bar in Wizard.tsx using XMLHttpRequest
+
+## Phase 13: Multi-Source Data Integration
+
+### Backend: Data Source Fetchers
+- [x] Create server/datasources/gdelt.ts — GDELT news events fetcher (free, no key)
+- [x] Create server/datasources/semanticscholar.ts — Semantic Scholar paper search (free, no key)
+- [x] Create server/datasources/arxiv.ts — arXiv preprint search (free, no key)
+- [x] Create server/datasources/wikipedia.ts — Wikipedia article + summary fetcher (free, no key)
+- [x] Create server/datasources/reddit.ts — Reddit subreddit top posts/comments (free, no key needed for read)
+- [x] Create server/datasources/hackernews.ts — Hacker News top stories + comments (free, no key)
+- [x] Create server/datasources/newsdata.ts — NewsData.io news search (free tier, optional API key)
+- [x] Create server/datasources/finnhub.ts — Finnhub stock news + sentiment (free tier, optional API key)
+- [x] Create server/datasources/alphavantage.ts — Alpha Vantage market data (free tier, optional API key)
+- [x] Create server/datasources/coingecko.ts — CoinGecko crypto data (free, no key)
+- [x] Create server/datasources/fred.ts — FRED economic indicators (free, no key)
+- [x] Create server/datasources/youtube.ts — YouTube video comments/metadata (free tier, optional API key)
+- [x] Create server/datasources/openalex.ts — OpenAlex scholarly works (free, no key)
+- [x] Create server/datasources/pubmed.ts — PubMed biomedical papers (free, no key)
+- [x] Create server/datasources/worldbank.ts — World Bank development indicators (free, no key)
+- [x] Create server/datasources/index.ts — unified fetchFromSource(source, query, options) dispatcher
+
+### Backend: tRPC Procedures
+- [x] Add datasources.search tRPC procedure — query any source by name + topic, return structured results
+- [x] Add datasources.ingest tRPC procedure — fetch + store results as project documents
+- [x] Add datasources.list tRPC procedure — list available sources with metadata (name, type, free/paid, description)
+
+### Frontend: Live Data Sources Panel in Wizard Step 1
+- [x] Create client/src/components/LiveDataSourcesPanel.tsx — grid of source cards with search input per source
+- [x] Wire LiveDataSourcesPanel into Wizard Step 1 below the document upload section
+- [x] Show ingested items as document cards (same as uploaded files) with source badge
+- [x] Add "Ingest" button per source that calls datasources.ingest and adds to uploadedFiles state
+
+## Phase 14: Smart Data Source Recommendations
+- [x] Backend: datasources.recommend tRPC procedure — LLM analyses project topic + type, returns ranked source list with relevance scores and suggested queries
+- [x] Frontend: LiveDataSourcesPanel shows "Recommended" badge on top-ranked sources, sorts recommended sources first, auto-fills query fields with LLM-suggested queries
+- [x] Frontend: Auto-loads recommendations when panel is first expanded, with loading state banner
