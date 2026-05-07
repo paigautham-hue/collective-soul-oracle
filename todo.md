@@ -80,3 +80,9 @@
 ## Phase 11: Delete & Visual Simulation Monitor
 - [x] Add "Delete Project" option to project cards on Dashboard (Home.tsx) with confirmation dialog
 - [x] Rebuild SimulationMonitor with stunning graphical rendering: animated agent network canvas, live Recharts activity timeline, per-agent action counters, round-by-round sentiment chart, cinematic log terminal
+
+## Phase 12: PDF Extraction, Simulation Delete, Upload Progress
+- [x] Install pdf-parse and @types/pdf-parse, extract real text from uploaded PDFs
+- [x] Backend: simulations.deleteRun tRPC procedure to delete a simulation run by id (already existed, upgraded icon to Trash2)
+- [x] Frontend: trash icon button on each simulation run row in ProjectDetail.tsx
+- [x] Frontend: per-file upload progress bar in Wizard.tsx using XMLHttpRequest

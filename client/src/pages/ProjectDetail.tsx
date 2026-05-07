@@ -10,7 +10,7 @@ import { Sparkles } from "lucide-react";
 import {
   ArrowLeft, Network, Activity, FileText, MessageSquare,
   Play, ChevronRight, Brain, Zap, Globe, Users, Clock,
-  Layers, BarChart3, Wand2, GitBranch, Target, Loader2, Eraser,
+  Layers, BarChart3, Wand2, GitBranch, Target, Loader2, Trash2, Eraser,
   Briefcase,
 } from "lucide-react";
 import {
@@ -420,7 +420,7 @@ export default function ProjectDetail() {
                             title={isLive ? "Stop the simulation before deleting" : "Delete this simulation"}
                             className="opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 p-0 text-[oklch(0.65_0.20_25)] hover:bg-[oklch(0.30_0.15_25_/_0.15)]"
                           >
-                            <Eraser className="w-3.5 h-3.5" />
+                            <Trash2 className="w-3.5 h-3.5" />
                           </Button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>

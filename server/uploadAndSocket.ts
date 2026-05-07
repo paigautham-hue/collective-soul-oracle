@@ -133,8 +133,19 @@ export function registerUploadAndSocket(app: Express, server: Server) {
       if (mimeType === "text/plain" || filename.endsWith(".txt")) {
         extractedText = buffer.toString("utf-8");
       } else if (mimeType === "application/pdf" || filename.endsWith(".pdf")) {
-        // For PDF, we'll store the raw text extraction note
-        extractedText = `[PDF Document: ${filename}. Text extraction requires server-side processing.]`;
+        try {
+          const pdfParse = await import("pdf-parse");
+          // pdf-parse default export may be wrapped
+          const parse = (pdfParse as any).default ?? pdfParse;
+          const result = await parse(buffer);
+          extractedText = result.text ?? "";
+          if (!extractedText.trim()) {
+            extractedText = `[PDF Document: ${filename} — no extractable text (scanned/image-only PDF)]`;
+          }
+        } catch (pdfErr) {
+          console.error("[Upload] PDF parse error:", pdfErr);
+          extractedText = `[PDF Document: ${filename} — text extraction failed: ${pdfErr instanceof Error ? pdfErr.message : String(pdfErr)}]`;
+        }
       } else if (filename.endsWith(".docx")) {
         try {
           const mammoth = await import("mammoth");

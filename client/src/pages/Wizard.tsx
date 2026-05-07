@@ -33,6 +33,7 @@ export default function Wizard() {
   const [uploadedFiles, setUploadedFiles] = useState<Array<{ name: string; text: string; url: string }>>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [graphBuilding, setGraphBuilding] = useState(false);
   const [agentsBuilding, setAgentsBuilding] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -77,24 +78,60 @@ export default function Wizard() {
     onError: (err) => toast.error(err.message),
   });
 
+  const uploadFileWithProgress = (
+    file: File,
+    progressKey: string
+  ): Promise<{ success: boolean; fullText?: string; storageUrl?: string; error?: string }> => {
+    return new Promise((resolve) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("projectId", projectId.toString());
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/upload/document");
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setUploadProgress((prev) => ({ ...prev, [progressKey]: pct }));
+        }
+      };
+      xhr.onload = () => {
+        setUploadProgress((prev) => ({ ...prev, [progressKey]: 100 }));
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          resolve({ success: false, error: "Invalid server response" });
+        }
+      };
+      xhr.onerror = () => resolve({ success: false, error: "Network error" });
+      xhr.send(formData);
+    });
+  };
+
   const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setIsUploading(true);
-    for (const file of Array.from(files)) {
+    // Use name+size+lastModified as unique key to avoid collisions with same-named files
+    const fileEntries = Array.from(files).map((f) => ({
+      file: f,
+      key: `${f.name}-${f.size}-${f.lastModified}`,
+    }));
+    const initialProgress: Record<string, number> = {};
+    for (const { key } of fileEntries) initialProgress[key] = 0;
+    setUploadProgress((prev) => ({ ...prev, ...initialProgress }));
+    for (const { file, key } of fileEntries) {
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("projectId", projectId.toString());
-        const res = await fetch("/api/upload/document", { method: "POST", body: formData });
-        const data = await res.json();
+        const data = await uploadFileWithProgress(file, key);
         if (data.success) {
-          setUploadedFiles((prev) => [...prev, { name: file.name, text: data.fullText || "", url: data.storageUrl }]);
+          setUploadedFiles((prev) => [...prev, { name: file.name, text: data.fullText || "", url: data.storageUrl || "" }]);
           toast.success(`${file.name} uploaded successfully`);
         } else {
           toast.error(data.error || "Upload failed");
         }
       } catch (err) {
         toast.error(`Failed to upload ${file.name}`);
+      } finally {
+        // Remove progress entry after a short delay so the bar fades out
+        setTimeout(() => setUploadProgress((prev) => { const n = { ...prev }; delete n[key]; return n; }), 1200);
       }
     }
     setIsUploading(false);
@@ -236,15 +273,50 @@ export default function Wizard() {
                   )}
                 </div>
 
+                {/* In-progress upload bars */}
+                {Object.keys(uploadProgress).length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    {Object.entries(uploadProgress).map(([key, pct]) => (
+                      <div key={key} className="rounded-xl bg-[oklch(0.10_0.02_265_/_0.60)] border border-[oklch(0.25_0.03_265_/_0.30)] p-3">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="w-3.5 h-3.5 text-[oklch(0.65_0.30_280)] animate-spin" />
+                            {/* key = "name-size-lastModified"; display only the file name part */}
+                            <span className="font-cormorant text-sm text-[oklch(0.85_0.02_265)] truncate max-w-[200px]">{key.replace(/-\d+-\d+$/, "")}</span>
+                          </div>
+                          <span className="font-jetbrains text-xs text-[oklch(0.55_0.28_280)]">{pct}%</span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-[oklch(0.20_0.03_265_/_0.50)] overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-[oklch(0.55_0.28_280)] to-[oklch(0.65_0.30_280)] transition-all duration-200"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {/* Uploaded Files */}
                 {uploadedFiles.length > 0 && (
                   <div className="mt-6 space-y-2">
                     <p className="font-cinzel text-xs tracking-wider text-[oklch(0.65_0.30_280)] mb-3">UPLOADED FILES</p>
                     {uploadedFiles.map((f, i) => (
                       <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-[oklch(0.10_0.02_265_/_0.60)] border border-[oklch(0.25_0.03_265_/_0.30)]">
-                        <div className="flex items-center gap-3">
-                          <FileText className="w-4 h-4 text-[oklch(0.65_0.30_280)]" />
-                          <span className="font-cormorant text-sm text-[oklch(0.85_0.02_265)]">{f.name}</span>
+                        <div className="flex items-center gap-3 min-w-0">
+                          <FileText className="w-4 h-4 text-[oklch(0.65_0.30_280)] shrink-0" />
+                          <div className="min-w-0">
+                            <span className="font-cormorant text-sm text-[oklch(0.85_0.02_265)] block truncate">{f.name}</span>
+                            {f.text && !f.text.startsWith("[") && (
+                              <span className="font-jetbrains text-[10px] text-[oklch(0.55_0.28_280)]">
+                                {f.text.length.toLocaleString()} chars extracted
+                              </span>
+                            )}
+                            {f.text && f.text.startsWith("[") && (
+                              <span className="font-jetbrains text-[10px] text-[oklch(0.65_0.20_25)]">
+                                {f.text.includes("scanned") ? "scanned PDF — no text" : "extraction note"}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div className="flex items-center gap-2">
                           <Check className="w-4 h-4 text-[oklch(0.72_0.18_145)]" />
