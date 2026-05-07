@@ -1,21 +1,31 @@
-// Gemini Deep Research client.
+// Gemini Deep Research — Interactions API client (Node.js/TypeScript)
 //
-// The dedicated "deep-research-*" model IDs require Google's Interactions API
-// (a proprietary multi-turn streaming protocol) and return HTTP 400 when called
-// via the standard generateContent REST endpoint.
+// Deep Research is EXCLUSIVELY available via the Interactions API.
+// It CANNOT be called through generateContent — that always returns HTTP 400.
 //
-// This implementation uses gemini-2.5-pro (preview) with Google Search grounding
-// enabled — which produces the same web-researched, citation-rich output and is
-// fully supported by the standard generateContent endpoint.
+// Official REST endpoint (v1beta):
+//   POST   https://generativelanguage.googleapis.com/v1beta/interactions
+//   GET    https://generativelanguage.googleapis.com/v1beta/interactions/{id}
+//   POST   https://generativelanguage.googleapis.com/v1beta/interactions/{id}/cancel
 //
-// Model routing:
-//   preview → gemini-2.5-flash  (fast, lower cost, used for seed research)
-//   max     → gemini-2.5-pro    (highest quality, used for full report synthesis)
+// Source: https://ai.google.dev/api/interactions-api
+//         https://ai.google.dev/gemini-api/docs/deep-research
+//
+// Two agent versions:
+//   deep-research-preview-04-2026  — speed & efficiency, ideal for streaming to UI
+//   deep-research-max-preview-04-2026 — maximum comprehensiveness for synthesis
+//
+// Flow:
+//   1. POST /interactions  { agent, input, background: true, agent_config: { type: "deep-research" } }
+//   2. Poll GET /interactions/{id} every 5s until status === "completed" | "failed"
+//   3. Return outputs[].text + citations from GoogleSearchResultContent items
 
 import { ENV } from "./_core/env";
 import { logUsage, getMonthlyUsage } from "./usage";
 
-const BASE = "https://generativelanguage.googleapis.com/v1beta";
+const INTERACTIONS_BASE = "https://generativelanguage.googleapis.com/v1beta/interactions";
+const POLL_INTERVAL_MS = 5000;
+const MAX_POLL_ATTEMPTS = 120; // 10 minutes max
 
 export type DeepResearchVariant = "preview" | "max";
 
@@ -42,6 +52,7 @@ export interface DeepResearchResult {
   visualizations: DeepResearchVisualization[];
   durationMs: number;
   model: string;
+  interactionId?: string;
   tokenInputEstimate?: number;
   tokenOutputEstimate?: number;
   raw?: unknown;
@@ -55,116 +66,219 @@ export interface RunDeepResearchArgs {
   userId: number;
   projectId?: number | null;
   task: string;
+  /** Enable collaborative planning mode — returns a plan for review before executing */
+  collaborativePlanning?: boolean;
+  /** ID of a previous interaction to continue from (for plan refinement) */
+  previousInteractionId?: string;
+  /** Enable native chart/infographic generation */
+  visualizations?: boolean;
 }
 
 export function isDeepResearchConfigured(): boolean {
   return Boolean(ENV.geminiDeepResearchKey);
 }
 
-export async function checkDeepResearchQuota(userId: number): Promise<{ usedThisMonth: number; quota: number; remaining: number }> {
+export async function checkDeepResearchQuota(userId: number): Promise<{
+  usedThisMonth: number;
+  quota: number;
+  remaining: number;
+}> {
   const used = await getMonthlyUsage(userId, "deep_research");
   const quota = ENV.deepResearchMonthlyQuota;
   return { usedThisMonth: used, quota, remaining: Math.max(0, quota - used) };
 }
 
-// Use standard generateContent-compatible models with Google Search grounding.
-// The deep-research-* model IDs only work via the Interactions API (not REST).
-function modelFor(variant: DeepResearchVariant): string {
-  if (variant === "max") {
-    return process.env.DEEP_RESEARCH_MAX_MODEL ?? "gemini-2.5-pro";
-  }
-  return process.env.DEEP_RESEARCH_PREVIEW_MODEL ?? "gemini-2.5-flash";
+function agentFor(variant: DeepResearchVariant): string {
+  return variant === "max"
+    ? (process.env.DEEP_RESEARCH_MAX_MODEL ?? "deep-research-max-preview-04-2026")
+    : (process.env.DEEP_RESEARCH_PREVIEW_MODEL ?? "deep-research-preview-04-2026");
 }
 
 function estimateCostUsd(variant: DeepResearchVariant): number {
-  return variant === "max" ? 4.0 : 0.5;
+  return variant === "max" ? 8.0 : 1.5;
+}
+
+/** Create a new interaction via the Interactions API */
+async function createInteraction(
+  agent: string,
+  input: string,
+  options: {
+    systemInstruction?: string;
+    collaborativePlanning?: boolean;
+    previousInteractionId?: string;
+    visualizations?: boolean;
+    apiKey: string;
+  }
+): Promise<{ id: string; status: string }> {
+  const body: Record<string, unknown> = {
+    agent,
+    input,
+    background: true,
+    agent_config: {
+      type: "deep-research",
+      collaborative_planning: options.collaborativePlanning ?? false,
+      visualization: options.visualizations ? "auto" : "off",
+      thinking_summaries: "none",
+    },
+  };
+
+  if (options.systemInstruction) {
+    body.system_instruction = options.systemInstruction;
+  }
+  if (options.previousInteractionId) {
+    body.previous_interaction_id = options.previousInteractionId;
+  }
+
+  const res = await fetch(`${INTERACTIONS_BASE}?key=${options.apiKey}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Interactions API create failed ${res.status}: ${text.slice(0, 800)}`);
+  }
+
+  const data = JSON.parse(text) as { id: string; status: string };
+  return data;
+}
+
+/** Poll an interaction until it completes or fails */
+async function pollInteraction(
+  id: string,
+  apiKey: string
+): Promise<InteractionResource> {
+  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+    const res = await fetch(`${INTERACTIONS_BASE}/${id}?key=${apiKey}`, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+    });
+
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Interactions API poll failed ${res.status}: ${text.slice(0, 400)}`);
+    }
+
+    const data = JSON.parse(text) as InteractionResource;
+
+    if (data.status === "completed") return data;
+    if (data.status === "failed") {
+      throw new Error(`Deep Research interaction failed: ${JSON.stringify(data).slice(0, 400)}`);
+    }
+    if (data.status === "cancelled") {
+      throw new Error("Deep Research interaction was cancelled");
+    }
+
+    // Still in_progress — wait and retry
+    await sleep(POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`Deep Research timed out after ${(MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`);
+}
+
+/** Extract text and citations from a completed interaction */
+function extractResults(data: InteractionResource): {
+  text: string;
+  citations: Array<{ url?: string; title?: string; snippet?: string }>;
+  visualizations: DeepResearchVisualization[];
+} {
+  const outputs = data.outputs ?? [];
+
+  // Collect all text parts
+  const textParts: string[] = [];
+  const citations: Array<{ url?: string; title?: string; snippet?: string }> = [];
+  const visualizations: DeepResearchVisualization[] = [];
+
+  for (const output of outputs) {
+    if (output.type === "text" && output.text) {
+      textParts.push(output.text);
+    }
+    // GoogleSearchResultContent contains grounding citations
+    if (output.type === "google_search_result" && output.results) {
+      for (const r of output.results) {
+        citations.push({ url: r.uri, title: r.title, snippet: r.snippet });
+      }
+    }
+    // ImageContent from visualization
+    if (output.type === "image" && output.data) {
+      visualizations.push({
+        type: "infographic",
+        data: output.data,
+        caption: output.caption,
+      });
+    }
+  }
+
+  // Fallback: extract inline visualizations from text
+  const text = textParts.join("\n\n");
+  if (visualizations.length === 0) {
+    visualizations.push(...extractInlineVisualizations(text));
+  }
+
+  return { text, citations, visualizations };
 }
 
 export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepResearchResult> {
   if (!isDeepResearchConfigured()) {
     throw new Error("Deep Research not configured (set GEMINI_API_KEY)");
   }
+
   const quota = await checkDeepResearchQuota(args.userId);
   if (quota.remaining <= 0) {
     throw new Error(`Deep Research monthly quota exhausted (${quota.usedThisMonth}/${quota.quota})`);
   }
 
-  const model = modelFor(args.variant);
-  const url = `${BASE}/models/${model}:generateContent?key=${ENV.geminiDeepResearchKey}`;
+  const agent = agentFor(args.variant);
+  const apiKey = ENV.geminiDeepResearchKey;
 
+  // Build the prompt, embedding any structured plan as context
   const planBlock = args.plan ? buildPlanBlock(args.plan) : "";
-  const userText = planBlock ? `${planBlock}\n\nREQUEST:\n${args.prompt}` : args.prompt;
-
-  const body: Record<string, unknown> = {
-    contents: [{ role: "user", parts: [{ text: userText }] }],
-    // Enable Google Search grounding for live web-sourced, citation-rich output.
-    tools: [{ googleSearch: {} }],
-    generationConfig: {
-      maxOutputTokens: args.variant === "max" ? 16384 : 8192,
-      temperature: 0.4,
-    },
-  };
-
-  if (args.systemInstruction) {
-    body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
-  }
+  const fullPrompt = planBlock ? `${planBlock}\n\nREQUEST:\n${args.prompt}` : args.prompt;
 
   const startedAt = Date.now();
   let status: "ok" | "error" = "ok";
-  let resJson: unknown = null;
+  let interactionId: string | undefined;
 
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+    // Step 1: Create the interaction (returns immediately with an ID)
+    const created = await createInteraction(agent, fullPrompt, {
+      systemInstruction: args.systemInstruction,
+      collaborativePlanning: args.collaborativePlanning,
+      previousInteractionId: args.previousInteractionId,
+      visualizations: args.plan?.visualizations ?? args.visualizations,
+      apiKey,
     });
-    const responseText = await res.text();
-    if (!res.ok) {
-      status = "error";
-      throw new Error(`Deep Research ${res.status}: ${responseText.slice(0, 800)}`);
-    }
-    try { resJson = JSON.parse(responseText); } catch { resJson = responseText; }
 
-    const data = resJson as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
-        groundingMetadata?: {
-          groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
-          citations?: Array<{ uri?: string; title?: string; snippet?: string }>;
-        };
-      }>;
-      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-    };
+    interactionId = created.id;
 
-    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+    // Step 2: Poll until complete
+    const completed = await pollInteraction(interactionId, apiKey);
 
-    // Extract citations from grounding chunks (Google Search grounding format)
-    const groundingChunks = data.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
-    const legacyCitations = data.candidates?.[0]?.groundingMetadata?.citations ?? [];
-    const citations = groundingChunks.length > 0
-      ? groundingChunks.map((c) => ({ url: c.web?.uri, title: c.web?.title, snippet: undefined }))
-      : legacyCitations.map((c) => ({ url: c.uri, title: c.title, snippet: c.snippet }));
-
-    const visualizations = extractInlineVisualizations(text);
+    // Step 3: Extract results
+    const { text, citations, visualizations } = extractResults(completed);
 
     return {
       text,
       citations,
       visualizations,
       durationMs: Date.now() - startedAt,
-      model,
-      tokenInputEstimate: data.usageMetadata?.promptTokenCount,
-      tokenOutputEstimate: data.usageMetadata?.candidatesTokenCount,
-      raw: data,
+      model: agent,
+      interactionId,
+      tokenInputEstimate: completed.usage?.inputTokenCount,
+      tokenOutputEstimate: completed.usage?.outputTokenCount,
+      raw: completed,
     };
+  } catch (err) {
+    status = "error";
+    throw err;
   } finally {
     await logUsage({
       userId: args.userId,
       projectId: args.projectId ?? null,
       task: "deep_research",
       provider: "gemini",
-      model,
+      model: agent,
       callMs: Date.now() - startedAt,
       costEstimateUsd: estimateCostUsd(args.variant),
       status,
@@ -172,16 +286,39 @@ export async function runDeepResearch(args: RunDeepResearchArgs): Promise<DeepRe
   }
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface InteractionResource {
+  id?: string;
+  status?: "in_progress" | "requires_action" | "completed" | "failed" | "cancelled";
+  outputs?: Array<{
+    type?: string;
+    text?: string;
+    data?: string;
+    caption?: string;
+    results?: Array<{ uri?: string; title?: string; snippet?: string }>;
+  }>;
+  usage?: {
+    inputTokenCount?: number;
+    outputTokenCount?: number;
+  };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function buildPlanBlock(plan: DeepResearchPlan): string {
   const lines = ["RESEARCH PLAN:"];
   lines.push(`- Scope: ${plan.scope}`);
   if (plan.sources?.length) lines.push(`- Preferred sources: ${plan.sources.join(", ")}`);
-  if (plan.outputStructure?.length) lines.push(`- Required output sections: ${plan.outputStructure.join(" → ")}`);
+  if (plan.outputStructure?.length)
+    lines.push(`- Required output sections: ${plan.outputStructure.join(" → ")}`);
   if (plan.citationRequirement) lines.push(`- Citations: ${plan.citationRequirement}`);
-  if (plan.visualizations) lines.push(`- Include native visualizations (charts, tables, infographics) where they aid understanding`);
+  if (plan.visualizations)
+    lines.push(`- Include native visualizations (charts, tables, infographics) where they aid understanding`);
   if (plan.privateContext?.length) {
     lines.push("- Private context blocks the user has provided:");
-    for (const ctx of plan.privateContext) lines.push(`  • ${ctx.label}: ${ctx.content.slice(0, 4000)}`);
+    for (const ctx of plan.privateContext)
+      lines.push(`  • ${ctx.label}: ${ctx.content.slice(0, 4000)}`);
   }
   return lines.join("\n");
 }
@@ -191,7 +328,15 @@ function extractInlineVisualizations(text: string): DeepResearchVisualization[] 
   const re = /```viz\s*([\s\S]*?)```/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    try { out.push(JSON.parse(m[1]) as DeepResearchVisualization); } catch { /* skip */ }
+    try {
+      out.push(JSON.parse(m[1]) as DeepResearchVisualization);
+    } catch {
+      /* skip malformed blocks */
+    }
   }
   return out;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
