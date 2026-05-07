@@ -1,13 +1,13 @@
 // The Collective Soul: Oracle — Service Worker
-// Caches: app shell (static assets), past reports, and project history API responses
+// Caches: app shell (static assets) only.
+// API routes (/api/*) are NEVER intercepted — always go to the network.
+// Intercepting API routes causes "Unexpected token DOCTYPE" JSON parse errors.
 
-const CACHE_VERSION = "oracle-v1";
+const CACHE_VERSION = "oracle-v2";
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
-const DATA_CACHE = `${CACHE_VERSION}-data`;
 
 // App shell assets to pre-cache on install
 const SHELL_ASSETS = [
-  "/",
   "/manifest.json",
   "/icon-192.png",
   "/icon-512.png",
@@ -29,7 +29,7 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((key) => key.startsWith("oracle-") && key !== SHELL_CACHE && key !== DATA_CACHE)
+          .filter((key) => key !== SHELL_CACHE)
           .map((key) => caches.delete(key))
       )
     )
@@ -37,38 +37,28 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// ─── Fetch: network-first for API, cache-first for shell ─────────────────────
+// ─── Fetch ────────────────────────────────────────────────────────────────────
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip non-GET requests and cross-origin requests
+  // CRITICAL: Never intercept API or storage routes.
+  // Returning cached HTML for JSON API calls causes
+  // "Unexpected token '<', '<!DOCTYPE'" parse errors.
+  if (
+    url.pathname.startsWith("/api/") ||
+    url.pathname.startsWith("/manus-storage/")
+  ) {
+    return; // pass through to network
+  }
+
+  // Skip non-GET and cross-origin requests
   if (request.method !== "GET" || url.origin !== self.location.origin) {
     return;
   }
 
-  // tRPC API: network-first with cache fallback for reports and projects
-  if (url.pathname.startsWith("/api/trpc/reports") || url.pathname.startsWith("/api/trpc/projects")) {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(DATA_CACHE).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        })
-        .catch(() => caches.match(request))
-    );
-    return;
-  }
-
-  // Static assets: cache-first
-  if (
-    url.pathname.match(/\.(js|css|woff2?|ttf|png|svg|ico|webp)$/) ||
-    url.pathname === "/" ||
-    url.pathname === "/manifest.json"
-  ) {
+  // Static assets (JS, CSS, fonts, images): cache-first
+  if (url.pathname.match(/\.(js|css|woff2?|ttf|png|svg|ico|webp)$/) || url.pathname === "/manifest.json") {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;
@@ -84,10 +74,10 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // SPA fallback: serve index.html for all navigation requests
+  // SPA navigation: network-first, no HTML cache fallback for API paths
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request).catch(() => caches.match("/"))
+      fetch(request).catch(() => fetch("/"))
     );
   }
 });
