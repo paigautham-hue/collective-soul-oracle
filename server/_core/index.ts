@@ -10,6 +10,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerUploadAndSocket } from "../uploadAndSocket";
 import { registerPublicApi } from "../public-api";
+import { registerResearchStream } from "../research-stream";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -40,6 +41,7 @@ async function startServer() {
   registerOAuthRoutes(app);
   registerUploadAndSocket(app, server);
   registerPublicApi(app);
+  registerResearchStream(app);
   // tRPC API
   app.use(
     "/api/trpc",

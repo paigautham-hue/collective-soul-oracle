@@ -12,6 +12,9 @@ import {
   FileUp, X, Network, Sparkles,
 } from "lucide-react";
 import PresenceAvatars from "@/components/PresenceAvatars";
+import { PromptEnhancer } from "@/components/PromptEnhancer";
+import { ResearchProgressPanel } from "@/components/ResearchProgressPanel";
+import { CollaborativePlanReview } from "@/components/CollaborativePlanReview";
 
 const STEPS = [
   { id: 1, label: "Documents", icon: Upload, description: "Upload seed documents" },
@@ -491,6 +494,9 @@ function ResearchSeedBox({ projectId, topic, onSeeded }: { projectId: number; to
   const { data: research } = trpc.research.status.useQuery();
   const [draftTopic, setDraftTopic] = useState(topic);
   const [open, setOpen] = useState(false);
+  const [showPlan, setShowPlan] = useState(false);
+  const [activeInteractionId, setActiveInteractionId] = useState<string | null>(null);
+
   const seedMutation = trpc.research.seedProject.useMutation({
     onSuccess: (r) => {
       toast.success(`Seeded: ${r.entitiesAdded} entities, ${r.relationsAdded} relations, ${r.agentsAdded} agents`);
@@ -522,7 +528,8 @@ function ResearchSeedBox({ projectId, topic, onSeeded }: { projectId: number; to
           </Button>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-4">
+          {/* Topic input with AI Prompt Enhancer */}
           <div>
             <label className="block text-xs uppercase tracking-wider mb-1" style={{ color: "oklch(0.55 0.02 265)" }}>Topic to research</label>
             <input
@@ -532,17 +539,57 @@ function ResearchSeedBox({ projectId, topic, onSeeded }: { projectId: number; to
               className="w-full bg-transparent border rounded px-3 py-2 text-sm"
               style={{ borderColor: "oklch(0.25 0.05 265)" }}
             />
+            {/* AI Prompt Enhancer — rewrites the topic into a research-optimised prompt */}
+            <div className="mt-2">
+              <PromptEnhancer
+                value={draftTopic}
+                onChange={setDraftTopic}
+                projectType="general"
+                disabled={seedMutation.isPending || !!activeInteractionId}
+              />
+            </div>
           </div>
-          <div className="flex gap-2">
+
+          {/* Live thought-stream panel (shown while research is running via SSE) */}
+          {activeInteractionId && (
+            <ResearchProgressPanel
+              interactionId={activeInteractionId}
+              onComplete={() => { setActiveInteractionId(null); onSeeded(); }}
+              onError={(msg) => { toast.error(msg); setActiveInteractionId(null); }}
+            />
+          )}
+
+          <div className="flex gap-2 flex-wrap">
+            {/* Standard direct research */}
             <Button
               onClick={() => seedMutation.mutate({ projectId, topic: draftTopic, variant: "preview", suggestedAgentCount: 8 })}
-              disabled={!draftTopic.trim() || seedMutation.isPending}
+              disabled={!draftTopic.trim() || seedMutation.isPending || !!activeInteractionId}
             >
-              {seedMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              {seedMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
               Run research seed
+            </Button>
+            {/* Collaborative planning mode — review + refine before executing */}
+            <Button
+              variant="outline"
+              onClick={() => setShowPlan(true)}
+              disabled={!draftTopic.trim() || seedMutation.isPending || !!activeInteractionId}
+              style={{ borderColor: "oklch(0.55 0.28 280 / 0.40)", color: "oklch(0.65 0.28 280)" }}
+            >
+              <Brain className="w-4 h-4 mr-2" />
+              Collaborative Plan
             </Button>
             <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
           </div>
+
+          {/* Collaborative Plan Review — full-screen overlay for plan review/refinement */}
+          {showPlan && (
+            <CollaborativePlanReview
+              projectId={projectId}
+              topic={draftTopic}
+              onExecute={(id) => { setShowPlan(false); setActiveInteractionId(id); }}
+              onClose={() => setShowPlan(false)}
+            />
+          )}
         </div>
       )}
     </div>

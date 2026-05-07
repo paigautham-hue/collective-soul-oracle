@@ -54,3 +54,17 @@
 - [x] Generate and upload PWA icons (icon-192.png, icon-512.png)
 - [x] Service worker (sw.js) for offline caching of reports and project history, push notifications
 - [x] MiroFish integration architecture documented — LLM calls route to invokeLLM; Zep/OASIS requires separate Python env (see MIROFISH_INTEGRATION.md)
+
+## Phase 8: Deep Research Enhancements
+- [ ] Backend: SSE streaming endpoint for Deep Research thought summaries (/api/research/stream)
+- [ ] Backend: Collaborative Planning tRPC procedures (createPlan, refinePlan, executePlan)
+- [ ] Frontend: ResearchProgressPanel component with animated thought stream
+- [ ] Frontend: Wizard Step 1 — CollaborativePlanReview modal before executing research
+- [ ] Frontend: Wire SSE stream to progress panel during research run
+
+## Phase 9: AI Prompt Enhancer
+- [ ] Backend: research.enhancePrompt tRPC procedure — Claude Opus / GPT-4o rewrites raw topic into optimized research prompt
+- [ ] Frontend: PromptEnhancer component — inline "Enhance" button with diff view (original vs enhanced)
+- [ ] Frontend: Wire PromptEnhancer into Wizard Step 1 topic input field
+- [ ] Frontend: ResearchProgressPanel component with animated SSE thought stream
+- [ ] Frontend: CollaborativePlanReview modal in Wizard Step 1 (createPlan → review → refinePlan → executePlan)

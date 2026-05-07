@@ -33,7 +33,7 @@ import {
   getAllUsers,
 } from "./db";
 import { notifyOwner } from "./_core/notification";
-import { completeText, type LLMTask } from "./llm-router";
+import { completeText, complete, type LLMTask } from "./llm-router";
 import {
   createSimulationBranch,
   getBranchesByProject,
@@ -844,6 +844,78 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
 
   // ─── Deep Research (Gemini Apr-2026 preview models) ─────────────────────────
   research: router({
+    // ── Prompt Enhancer: rewrite raw topic into a rich, research-optimised prompt ──
+    enhancePrompt: protectedProcedure
+      .input(z.object({
+        rawTopic: z.string().min(3).max(1000),
+        projectType: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const systemPrompt = `You are an expert research strategist and prompt engineer working with a multi-agent AI simulation platform called The Collective Soul: Oracle.
+
+Your task is to transform a raw user topic into an exceptionally well-structured, research-optimised prompt that will maximise the quality, accuracy, depth, and actionability of a Gemini Deep Research run.
+
+An ideal enhanced prompt:
+1. Clarifies the precise scope and boundaries of the research
+2. Specifies the key dimensions to investigate (historical context, current state, future projections, key actors, risks, opportunities, interdependencies)
+3. Requests identification of specific entity types relevant to multi-agent simulation (stakeholders, institutions, market forces, ideological positions)
+4. Asks for quantitative data, citations, and primary sources where available
+5. Specifies the desired output structure to maximise downstream use in knowledge graph construction and agent persona generation
+6. Is written in clear, direct language that a research AI can act on immediately
+
+Return ONLY a JSON object with this exact shape:
+{
+  "enhancedPrompt": "<the full enhanced prompt text>",
+  "keyDimensions": ["<dimension 1>", "<dimension 2>", ...],
+  "suggestedAgentTypes": ["<agent archetype 1>", "<agent archetype 2>", ...],
+  "estimatedComplexity": "low" | "medium" | "high" | "very_high",
+  "rationale": "<1-2 sentences explaining the key improvements made>"
+}`;
+
+        const userPrompt = `Raw topic: "${input.rawTopic}"\nProject type: ${input.projectType ?? "general"}\n\nEnhance this into an optimal Deep Research prompt.`;
+
+        const result = await complete({
+          task: "report_generation", // routes to Claude Opus 4.7 → GPT-5 → Gemini 2.5 Pro
+          systemPrompt,
+          prompt: userPrompt,
+          responseFormat: "json",
+          maxTokens: 2048,
+          temperature: 0.3,
+        });
+
+        let parsed: {
+          enhancedPrompt: string;
+          keyDimensions: string[];
+          suggestedAgentTypes: string[];
+          estimatedComplexity: string;
+          rationale: string;
+        } | null = null;
+
+        try {
+          const raw = result.json ?? JSON.parse(result.text.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
+          parsed = raw as typeof parsed;
+        } catch {
+          // fallback: return the raw text as the enhanced prompt
+          parsed = {
+            enhancedPrompt: result.text,
+            keyDimensions: [],
+            suggestedAgentTypes: [],
+            estimatedComplexity: "medium",
+            rationale: "Enhanced by AI.",
+          };
+        }
+
+        return {
+          enhancedPrompt: parsed?.enhancedPrompt ?? input.rawTopic,
+          keyDimensions: parsed?.keyDimensions ?? [],
+          suggestedAgentTypes: parsed?.suggestedAgentTypes ?? [],
+          estimatedComplexity: parsed?.estimatedComplexity ?? "medium",
+          rationale: parsed?.rationale ?? "",
+          provider: result.provider,
+          model: result.model,
+        };
+      }),
+
     status: protectedProcedure.query(async ({ ctx }) => {
       const configured = isDeepResearchConfigured();
       const quota = configured ? await checkDeepResearchQuota(ctx.user.id) : { usedThisMonth: 0, quota: 0, remaining: 0 };
@@ -927,6 +999,196 @@ Create ${input.agentCount} diverse, realistic agents with varied demographics, i
         if (agentRows.length > 0) await upsertAgents(agentRows);
 
         // Update project as graph-built
+        await updateProject(input.projectId, { graphBuilt: true, status: "graph_ready", topic: project.topic ?? input.topic });
+
+        return {
+          summary: parsed.summary ?? "",
+          entitiesAdded: nodes.length,
+          relationsAdded: edges.length,
+          agentsAdded: agentRows.length,
+          citations: dr.citations,
+          model: dr.model,
+        };
+      }),
+
+    // ── Collaborative Planning: Phase 1 — generate a research plan for review ──
+    createPlan: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        topic: z.string().min(3).max(500),
+        variant: z.enum(["preview", "max"]).default("preview"),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+
+        // Use collaborative_planning: true — Interactions API returns a plan
+        // for review before executing research. We capture the interaction ID
+        // so the user can refine or approve it.
+        const INTERACTIONS_BASE = "https://generativelanguage.googleapis.com/v1beta/interactions";
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "GEMINI_API_KEY not set" });
+
+        const agent = input.variant === "max"
+          ? (process.env.DEEP_RESEARCH_MAX_MODEL ?? "deep-research-max-preview-04-2026")
+          : (process.env.DEEP_RESEARCH_PREVIEW_MODEL ?? "deep-research-preview-04-2026");
+
+        const body = {
+          agent,
+          input: `Topic: "${input.topic}"\nProject type: ${project.projectType}\n\nCreate a detailed research plan to map the entity/persona landscape for a multi-agent simulation. Include: key research questions, data sources to consult, entity categories to identify, and expected output structure.`,
+          background: true,
+          agent_config: {
+            type: "deep-research",
+            collaborative_planning: true,
+            visualization: "off",
+            thinking_summaries: "auto",
+          },
+        };
+
+        const res = await fetch(`${INTERACTIONS_BASE}?key=${apiKey}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        const text = await res.text();
+        if (!res.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Plan creation failed: ${text.slice(0, 400)}` });
+
+        const data = JSON.parse(text) as { id: string; status: string; outputs?: Array<{ type?: string; text?: string }> };
+
+        // Poll briefly (up to 60s) for the plan to be ready
+        let planText = "";
+        let planStatus = data.status;
+        let interactionId = data.id;
+
+        for (let i = 0; i < 12 && planStatus === "in_progress"; i++) {
+          await new Promise(r => setTimeout(r, 5000));
+          const poll = await fetch(`${INTERACTIONS_BASE}/${interactionId}?key=${apiKey}`);
+          const pollData = JSON.parse(await poll.text()) as { id: string; status: string; outputs?: Array<{ type?: string; text?: string }> };
+          planStatus = pollData.status;
+          if (pollData.status === "completed" || pollData.status === "requires_action") {
+            planText = (pollData.outputs ?? []).filter(o => o.type === "text").map(o => o.text ?? "").join("\n\n");
+            break;
+          }
+        }
+
+        return { interactionId, status: planStatus, planText, topic: input.topic, variant: input.variant };
+      }),
+
+    // ── Collaborative Planning: Phase 2 — refine the plan with user feedback ──
+    refinePlan: protectedProcedure
+      .input(z.object({
+        interactionId: z.string(),
+        feedback: z.string().min(1).max(2000),
+        variant: z.enum(["preview", "max"]).default("preview"),
+      }))
+      .mutation(async ({ input }) => {
+        const INTERACTIONS_BASE = "https://generativelanguage.googleapis.com/v1beta/interactions";
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "GEMINI_API_KEY not set" });
+
+        const agent = input.variant === "max"
+          ? (process.env.DEEP_RESEARCH_MAX_MODEL ?? "deep-research-max-preview-04-2026")
+          : (process.env.DEEP_RESEARCH_PREVIEW_MODEL ?? "deep-research-preview-04-2026");
+
+        const body = {
+          agent,
+          input: input.feedback,
+          background: true,
+          previous_interaction_id: input.interactionId,
+          agent_config: {
+            type: "deep-research",
+            collaborative_planning: true,
+            visualization: "off",
+            thinking_summaries: "auto",
+          },
+        };
+
+        const res = await fetch(`${INTERACTIONS_BASE}?key=${apiKey}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+        const text = await res.text();
+        if (!res.ok) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Plan refinement failed: ${text.slice(0, 400)}` });
+
+        const data = JSON.parse(text) as { id: string; status: string; outputs?: Array<{ type?: string; text?: string }> };
+
+        // Poll briefly for refined plan
+        let planText = "";
+        let planStatus = data.status;
+        const newInteractionId = data.id;
+
+        for (let i = 0; i < 12 && planStatus === "in_progress"; i++) {
+          await new Promise(r => setTimeout(r, 5000));
+          const poll = await fetch(`${INTERACTIONS_BASE}/${newInteractionId}?key=${apiKey}`);
+          const pollData = JSON.parse(await poll.text()) as { id: string; status: string; outputs?: Array<{ type?: string; text?: string }> };
+          planStatus = pollData.status;
+          if (pollData.status === "completed" || pollData.status === "requires_action") {
+            planText = (pollData.outputs ?? []).filter(o => o.type === "text").map(o => o.text ?? "").join("\n\n");
+            break;
+          }
+        }
+
+        return { interactionId: newInteractionId, status: planStatus, planText };
+      }),
+
+    // ── Collaborative Planning: Phase 3 — approve plan and execute full research ──
+    executePlan: protectedProcedure
+      .input(z.object({
+        projectId: z.number(),
+        interactionId: z.string(),
+        topic: z.string().min(3).max(500),
+        variant: z.enum(["preview", "max"]).default("preview"),
+        suggestedAgentCount: z.number().min(3).max(20).default(8),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const project = await getProjectById(input.projectId);
+        if (!project) throw new TRPCError({ code: "NOT_FOUND" });
+
+        // Execute the approved plan by continuing from the planning interaction
+        const dr = await runDeepResearch({
+          variant: input.variant,
+          systemInstruction: `You are a research planner for a multi-agent simulation. Surface the key entities, relationships, and stakeholder personas relevant to the topic. Return STRICT JSON with this shape:\n{\n  "summary": "<2-3 sentence framing of the topic>",\n  "entities": [{ "id": "<slug>", "label": "<name>", "type": "<entity_type>", "description": "<one line>" }],\n  "relations": [{ "source": "<entity_id>", "target": "<entity_id>", "label": "<relation>" }],\n  "personas": [{ "name": "<name>", "persona": "<one-paragraph profile>", "ideology": "<short stance>" }]\n}`,
+          prompt: `Topic: "${input.topic}"\nProject type: ${project.projectType}\nProduce up to 20 entities, 25 relations, and exactly ${input.suggestedAgentCount} stakeholder personas. Output JSON only.`,
+          plan: {
+            scope: `Map the entity/persona landscape for "${input.topic}" suitable for a ${project.projectType} multi-agent simulation.`,
+            outputStructure: ["JSON object with summary, entities, relations, personas"],
+            citationRequirement: "preferred",
+            visualizations: false,
+          },
+          previousInteractionId: input.interactionId,
+          userId: ctx.user.id,
+          projectId: input.projectId,
+          task: "research_seed",
+        });
+
+        let parsed: { summary?: string; entities?: Array<{ id: string; label: string; type?: string; description?: string }>; relations?: Array<{ source: string; target: string; label?: string }>; personas?: Array<{ name: string; persona: string; ideology?: string }> } = {};
+        try {
+          const m = dr.text.match(/\{[\s\S]*\}/);
+          parsed = m ? JSON.parse(m[0]) : {};
+        } catch { /* ignore */ }
+
+        const nodes = (parsed.entities ?? []).filter(e => e.id && e.label).map(e => ({
+          projectId: input.projectId, nodeId: e.id, label: e.label, type: e.type ?? "entity", description: e.description ?? null,
+        }));
+        if (nodes.length > 0) await upsertGraphNodes(nodes);
+
+        const edges = (parsed.relations ?? []).filter(r => r.source && r.target).map(r => ({
+          projectId: input.projectId, sourceId: r.source, targetId: r.target, label: r.label ?? "related_to", weight: 1.0,
+        }));
+        if (edges.length > 0) await upsertGraphEdges(edges);
+
+        const personas = parsed.personas ?? [];
+        const agentRows = personas.filter(p => p.name && p.persona).map(p => ({
+          projectId: input.projectId,
+          agentId: `${p.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 32)}-${Date.now().toString(36).slice(-4)}`,
+          name: p.name, persona: p.persona, ideology: p.ideology ?? null,
+          platform: "twitter" as const, followers: 0, following: 0,
+        }));
+        if (agentRows.length > 0) await upsertAgents(agentRows);
+
         await updateProject(input.projectId, { graphBuilt: true, status: "graph_ready", topic: project.topic ?? input.topic });
 
         return {
