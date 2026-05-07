@@ -492,10 +492,13 @@ export default function Wizard() {
 
 function ResearchSeedBox({ projectId, topic, onSeeded }: { projectId: number; topic: string; onSeeded: () => void }) {
   const { data: research } = trpc.research.status.useQuery();
+  const { data: docList } = trpc.documents.list.useQuery({ projectId });
+  const hasDocuments = (docList?.length ?? 0) > 0;
   const [draftTopic, setDraftTopic] = useState(topic);
   const [open, setOpen] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
   const [activeInteractionId, setActiveInteractionId] = useState<string | null>(null);
+  const [useUploadedDocuments, setUseUploadedDocuments] = useState(false);
 
   const seedMutation = trpc.research.seedProject.useMutation({
     onSuccess: (r) => {
@@ -559,10 +562,40 @@ function ResearchSeedBox({ projectId, topic, onSeeded }: { projectId: number; to
             />
           )}
 
+          {/* Document grounding toggle — shown only when docs are uploaded */}
+          {hasDocuments && (
+            <div
+              className="flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer select-none transition-all"
+              style={{
+                background: useUploadedDocuments ? "oklch(0.55 0.28 280 / 0.12)" : "oklch(0.12 0.03 265 / 0.6)",
+                border: `1px solid ${useUploadedDocuments ? "oklch(0.55 0.28 280 / 0.5)" : "oklch(0.25 0.05 265 / 0.5)"}`,
+              }}
+              onClick={() => setUseUploadedDocuments((v) => !v)}
+            >
+              <div>
+                <div className="text-xs font-semibold" style={{ color: useUploadedDocuments ? "oklch(0.75 0.28 280)" : "oklch(0.65 0.02 265)" }}>
+                  ✦ Ground research in uploaded documents
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: "oklch(0.50 0.02 265)" }}>
+                  {docList?.length} document{(docList?.length ?? 0) !== 1 ? "s" : ""} will be embedded as private context · Gemini researches the web through their lens
+                </div>
+              </div>
+              <div
+                className="w-10 h-5 rounded-full flex items-center transition-all duration-200 flex-shrink-0 ml-3"
+                style={{ background: useUploadedDocuments ? "oklch(0.55 0.28 280)" : "oklch(0.25 0.05 265)" }}
+              >
+                <div
+                  className="w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                  style={{ marginLeft: useUploadedDocuments ? "22px" : "2px" }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="flex gap-2 flex-wrap">
             {/* Standard direct research */}
             <Button
-              onClick={() => seedMutation.mutate({ projectId, topic: draftTopic, variant: "preview", suggestedAgentCount: 8 })}
+              onClick={() => seedMutation.mutate({ projectId, topic: draftTopic, variant: "preview", suggestedAgentCount: 8, useUploadedDocuments })}
               disabled={!draftTopic.trim() || seedMutation.isPending || !!activeInteractionId}
             >
               {seedMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}

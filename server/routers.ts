@@ -930,26 +930,44 @@ Return ONLY a JSON object with this exact shape:
         topic: z.string().min(3).max(500),
         variant: z.enum(["preview", "max"]).default("preview"),
         suggestedAgentCount: z.number().min(3).max(20).default(8),
+        /** When true, uploaded documents for this project are embedded as private context */
+        useUploadedDocuments: z.boolean().default(false),
       }))
       .mutation(async ({ ctx, input }) => {
         const project = await getProjectById(input.projectId);
         if (!project) throw new TRPCError({ code: "NOT_FOUND" });
 
+        // Build private context from uploaded documents
+        const privateContext: Array<{ label: string; content: string }> = [];
+        if (input.useUploadedDocuments) {
+          const docs = await getDocumentsByProject(input.projectId);
+          for (const doc of docs) {
+            if (doc.extractedText && doc.extractedText.length > 50) {
+              privateContext.push({
+                label: doc.filename,
+                content: doc.extractedText.slice(0, 6000),
+              });
+            }
+          }
+        }
+
+        const hasPrivateContext = privateContext.length > 0;
+        const privateContextBlock = hasPrivateContext
+          ? `\n\nPRIVATE CONTEXT (use these uploaded documents as grounding — integrate their insights, do NOT cite them as web sources):\n` +
+            privateContext.map((c) => `--- ${c.label} ---\n${c.content}`).join("\n\n")
+          : "";
+
+        const systemBlock = `You are a research planner for a multi-agent simulation. Surface the key entities, relationships, and stakeholder personas relevant to the topic. Return STRICT JSON with this shape:\n{\n  "summary": "<2-3 sentence framing of the topic>",\n  "entities": [{ "id": "<slug>", "label": "<name>", "type": "<entity_type>", "description": "<one line>" }],\n  "relations": [{ "source": "<entity_id>", "target": "<entity_id>", "label": "<relation>" }],\n  "personas": [{ "name": "<name>", "persona": "<one-paragraph profile>", "ideology": "<short stance>" }]\n}`;
+
         const dr = await runDeepResearch({
           variant: input.variant,
-          systemInstruction: `You are a research planner for a multi-agent simulation. Surface the key entities, relationships, and stakeholder personas relevant to the topic. Return STRICT JSON with this shape:
-{
-  "summary": "<2-3 sentence framing of the topic>",
-  "entities": [{ "id": "<slug>", "label": "<name>", "type": "<entity_type>", "description": "<one line>" }],
-  "relations": [{ "source": "<entity_id>", "target": "<entity_id>", "label": "<relation>" }],
-  "personas": [{ "name": "<name>", "persona": "<one-paragraph profile>", "ideology": "<short stance>" }]
-}`,
-          prompt: `Topic: "${input.topic}"\nProject type: ${project.projectType}\nProduce up to 20 entities, 25 relations, and exactly ${input.suggestedAgentCount} stakeholder personas. Output JSON only.`,
+          prompt: `${systemBlock}\n\nTopic: "${input.topic}"\nProject type: ${project.projectType}\nProduce up to 20 entities, 25 relations, and exactly ${input.suggestedAgentCount} stakeholder personas. Output JSON only.${privateContextBlock}`,
           plan: {
-            scope: `Map the entity/persona landscape for "${input.topic}" suitable for a ${project.projectType} multi-agent simulation.`,
+            scope: `Map the entity/persona landscape for "${input.topic}" suitable for a ${project.projectType} multi-agent simulation.${hasPrivateContext ? " Incorporate insights from the provided private documents." : ""}`,
             outputStructure: ["JSON object with summary, entities, relations, personas"],
             citationRequirement: "preferred",
             visualizations: false,
+            privateContext: hasPrivateContext ? privateContext : undefined,
           },
           userId: ctx.user.id,
           projectId: input.projectId,
