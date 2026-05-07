@@ -110,21 +110,23 @@ async function createInteraction(
     apiKey: string;
   }
 ): Promise<{ id: string; status: string }> {
+  // The Interactions API does NOT support a top-level `system_instruction` field.
+  // All instructions must be embedded directly in the `input` prompt.
+  const fullInput = options.systemInstruction
+    ? `INSTRUCTIONS:\n${options.systemInstruction}\n\n${input}`
+    : input;
+
   const body: Record<string, unknown> = {
     agent,
-    input,
+    input: fullInput,
     background: true,
     agent_config: {
       type: "deep-research",
       collaborative_planning: options.collaborativePlanning ?? false,
-      visualization: options.visualizations ? "auto" : "off",
       thinking_summaries: "none",
     },
   };
 
-  if (options.systemInstruction) {
-    body.system_instruction = options.systemInstruction;
-  }
   if (options.previousInteractionId) {
     body.previous_interaction_id = options.previousInteractionId;
   }
