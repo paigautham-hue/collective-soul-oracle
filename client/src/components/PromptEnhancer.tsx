@@ -133,11 +133,20 @@ export function PromptEnhancer({ value, onChange, projectType, disabled }: Promp
               </div>
             </div>
 
-            {/* Enhanced prompt text */}
-            <div className="px-4 py-3">
-              <p className="text-sm text-white/80 leading-relaxed font-light" style={{ fontFamily: "'Cormorant Garamond', serif" }}>
-                {enhanced.enhancedPrompt}
-              </p>
+            {/* Side-by-side diff: Original vs Enhanced */}
+            <div className="grid grid-cols-2 divide-x divide-indigo-500/20">
+              <div className="px-4 py-3">
+                <p className="font-mono text-[9px] tracking-[0.15em] text-white/25 mb-1.5 uppercase">Original</p>
+                <p className="text-sm text-white/40 leading-relaxed font-light line-through decoration-white/20" style={{ fontFamily: "'Cormorant Garamond', serif" }}>
+                  {value}
+                </p>
+              </div>
+              <div className="px-4 py-3 bg-indigo-500/5">
+                <p className="font-mono text-[9px] tracking-[0.15em] text-indigo-400/70 mb-1.5 uppercase">Enhanced</p>
+                <p className="text-sm text-white/85 leading-relaxed font-light" style={{ fontFamily: "'Cormorant Garamond', serif" }}>
+                  {enhanced.enhancedPrompt}
+                </p>
+              </div>
             </div>
 
             {/* Expandable details */}

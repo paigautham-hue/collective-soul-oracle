@@ -56,23 +56,27 @@
 - [x] MiroFish integration architecture documented — LLM calls route to invokeLLM; Zep/OASIS requires separate Python env (see MIROFISH_INTEGRATION.md)
 
 ## Phase 8: Deep Research Enhancements
-- [ ] Backend: SSE streaming endpoint for Deep Research thought summaries (/api/research/stream)
-- [ ] Backend: Collaborative Planning tRPC procedures (createPlan, refinePlan, executePlan)
-- [ ] Frontend: ResearchProgressPanel component with animated thought stream
-- [ ] Frontend: Wizard Step 1 — CollaborativePlanReview modal before executing research
-- [ ] Frontend: Wire SSE stream to progress panel during research run
+- [x] Backend: SSE streaming endpoint for Deep Research thought summaries (/api/research/stream)
+- [x] Backend: Collaborative Planning tRPC procedures (createPlan, refinePlan, executePlan)
+- [x] Frontend: ResearchProgressPanel component with animated thought stream
+- [x] Frontend: Wizard Step 1 — CollaborativePlanReview modal before executing research
+- [x] Frontend: Wire SSE stream to progress panel during research run
 
 ## Phase 9: AI Prompt Enhancer
-- [ ] Backend: research.enhancePrompt tRPC procedure — Claude Opus / GPT-4o rewrites raw topic into optimized research prompt
-- [ ] Frontend: PromptEnhancer component — inline "Enhance" button with diff view (original vs enhanced)
-- [ ] Frontend: Wire PromptEnhancer into Wizard Step 1 topic input field
-- [ ] Frontend: ResearchProgressPanel component with animated SSE thought stream
-- [ ] Frontend: CollaborativePlanReview modal in Wizard Step 1 (createPlan → review → refinePlan → executePlan)
+- [x] Backend: research.enhancePrompt tRPC procedure — Claude Opus / GPT-4o rewrites raw topic into optimized research prompt
+- [x] Frontend: PromptEnhancer component — inline "Enhance" button with diff view (original vs enhanced)
+- [x] Frontend: Wire PromptEnhancer into Wizard Step 1 topic input field
+- [x] Frontend: ResearchProgressPanel component with animated SSE thought stream
+- [x] Frontend: CollaborativePlanReview modal in Wizard Step 1 (createPlan → review → refinePlan → executePlan)
 
 ## Phase 10: Document-Grounded Deep Research
-- [ ] Fix: fold system_instruction into input prompt (Interactions API 400 fix)
-- [ ] Backend: extend seedProject to embed uploaded doc text as privateContext in Deep Research
-- [ ] Backend: research.seedFromDocuments procedure — extract themes from docs via LLM, build research plan, run Deep Research with docs as grounding context
-- [ ] Frontend: Wizard Step 1 — "Research with documents" toggle when files are uploaded
-- [ ] Frontend: Wizard Step 1 — "Extract research plan from documents" button
-- [ ] Frontend: ResearchSeedBox — pass uploadedFiles text to backend as privateContext
+- [x] Fix: fold system_instruction into input prompt (Interactions API 400 fix)
+- [x] Backend: extend seedProject to embed uploaded doc text as privateContext in Deep Research
+- [x] Backend: research.seedFromDocuments procedure — extract themes from docs via LLM, build research plan, run Deep Research with docs as grounding context
+- [x] Frontend: Wizard Step 1 — "Research with documents" toggle when files are uploaded
+- [x] Frontend: Wizard Step 1 — "Extract research plan from documents" button
+- [x] Frontend: ResearchSeedBox — pass uploadedFiles text to backend as privateContext
+
+## Phase 11: Delete & Visual Simulation Monitor
+- [x] Add "Delete Project" option to project cards on Dashboard (Home.tsx) with confirmation dialog
+- [x] Rebuild SimulationMonitor with stunning graphical rendering: animated agent network canvas, live Recharts activity timeline, per-agent action counters, round-by-round sentiment chart, cinematic log terminal

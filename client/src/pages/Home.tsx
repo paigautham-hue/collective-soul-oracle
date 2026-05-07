@@ -21,8 +21,26 @@ import {
   Globe,
   Clock,
   Users,
+  MoreVertical,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // ─── Particle Canvas ──────────────────────────────────────────────────────────
 function ParticleCanvas() {
@@ -161,6 +179,15 @@ function StatusBadge({ status }: { status: string }) {
 
 // ─── Project Card ─────────────────────────────────────────────────────────────
 function ProjectCard({ project, index }: { project: any; index: number }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const utils = trpc.useUtils();
+  const deleteMutation = trpc.projects.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Project deleted");
+      utils.projects.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
   const statusIcons: Record<string, typeof Atom> = {
     draft: FileText,
     building_graph: Brain,
@@ -174,11 +201,35 @@ function ProjectCard({ project, index }: { project: any; index: number }) {
   const Icon = statusIcons[project.status] || Atom;
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.08, duration: 0.5, ease: "easeOut" }}
+      className="relative group"
     >
+      {/* Kebab menu — sits above the Link so clicks don't navigate */}
+      <div className="absolute top-3 right-3 z-10" onClick={(e) => e.preventDefault()}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="w-7 h-7 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-[oklch(0.12_0.02_265_/_0.85)] border border-[oklch(0.30_0.04_265_/_0.50)] hover:bg-[oklch(0.20_0.04_265)] text-[oklch(0.60_0.02_265)] hover:text-[oklch(0.97_0.005_265)]"
+              title="Project options"
+            >
+              <MoreVertical className="w-3.5 h-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="bg-[oklch(0.10_0.02_265)] border-[oklch(0.25_0.04_265_/_0.60)] min-w-[160px]">
+            <DropdownMenuItem
+              className="text-[oklch(0.70_0.25_25)] hover:text-[oklch(0.80_0.25_25)] hover:bg-[oklch(0.65_0.25_25_/_0.12)] cursor-pointer font-cormorant text-sm gap-2"
+              onClick={() => setConfirmOpen(true)}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete Project
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       <Link href={`/project/${project.id}`}>
         <div className="glass-card p-6 cursor-pointer group relative overflow-hidden">
           {/* Hover glow */}
@@ -231,6 +282,33 @@ function ProjectCard({ project, index }: { project: any; index: number }) {
         </div>
       </Link>
     </motion.div>
+
+    {/* Delete confirmation dialog */}
+    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <AlertDialogContent className="bg-[oklch(0.08_0.02_265)] border-[oklch(0.30_0.04_265_/_0.45)]">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="font-cinzel text-[oklch(0.97_0.005_265)]">
+            Delete "{project.title}"?
+          </AlertDialogTitle>
+          <AlertDialogDescription className="font-cormorant text-[oklch(0.65_0.02_265)] text-base leading-relaxed">
+            This permanently removes the project along with all its simulation runs, agents, documents, graph data, and reports. This action cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className="font-cinzel text-xs tracking-wider border-[oklch(0.30_0.04_265_/_0.40)] bg-transparent text-[oklch(0.65_0.02_265)] hover:bg-[oklch(0.15_0.02_265)]">
+            Cancel
+          </AlertDialogCancel>
+          <AlertDialogAction
+            className="font-cinzel text-xs tracking-wider bg-[oklch(0.55_0.25_25_/_0.85)] hover:bg-[oklch(0.60_0.25_25)] text-white border border-[oklch(0.65_0.25_25_/_0.40)]"
+            onClick={() => deleteMutation.mutate({ id: project.id })}
+            disabled={deleteMutation.isPending}
+          >
+            {deleteMutation.isPending ? "Deleting…" : "Delete Project"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 
